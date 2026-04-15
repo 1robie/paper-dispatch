@@ -10,10 +10,10 @@
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
-    <artifactId>Lib-Src</artifactId>
+    <artifactId>paper-dispatch</artifactId>
 
     <build>
-        <finalName>Paper-Dispatch-Lib</finalName>
+        <finalName>paper-dispatch</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
