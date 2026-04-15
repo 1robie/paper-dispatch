@@ -1,8 +1,8 @@
 package fr.robie.exempleplugin;
 
 import fr.robie.exempleplugin.command.TestCommand;
-import fr.robie.paperdispatch.CommandManager;
-import fr.robie.paperdispatch.ICommandManager;
+import fr.robie.paperdispatch.manager.CommandManager;
+import fr.robie.paperdispatch.manager.ICommandManager;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public class ExemplePlugin extends JavaPlugin {

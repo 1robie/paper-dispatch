@@ -1,10 +1,11 @@
-package fr.robie.paperdispatch;
+package fr.robie.paperdispatch.command;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.builder.ArgumentBuilder;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.tree.LiteralCommandNode;
+import fr.robie.paperdispatch.CommandResultType;
 import fr.robie.paperdispatch.requirement.CommandRequirement;
 import fr.robie.paperdispatch.requirement.PlayerOnlyRequirement;
 import fr.robie.paperdispatch.requirement.permissible.PermissionRequirement;
@@ -16,25 +17,25 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 
-public abstract class VCommand<T extends Plugin> {
+public abstract class SubCommand<T extends Plugin> {
 
     protected final T plugin;
     private final String name;
     private final Set<String> aliases = new HashSet<>();
 
-    private final List<VCommand<T>> subCommands = new ArrayList<>();
+    private final List<SubCommand<T>> subCommands = new ArrayList<>();
     private final List<CommandRequirement<T>> requirements = new ArrayList<>();
 
     @Nullable
     private ArgumentBuilder<CommandSourceStack, ?> argumentChain = null;
     private final List<ArgumentBuilder<CommandSourceStack, ?>> optionalArguments = new ArrayList<>();
 
-    protected VCommand(@NotNull T plugin, @NotNull String name) {
+    protected SubCommand(@NotNull T plugin, @NotNull String name) {
         this.plugin = plugin;
         this.name = name;
     }
 
-    protected VCommand(@NotNull T plugin, @NotNull String name, @NotNull String... aliases) {
+    protected SubCommand(@NotNull T plugin, @NotNull String name, @NotNull String... aliases) {
         this(plugin, name);
         this.aliases.addAll(Arrays.asList(aliases));
     }
@@ -50,7 +51,7 @@ public abstract class VCommand<T extends Plugin> {
     }
 
     @NotNull
-    public List<VCommand<T>> getSubCommands() {
+    public List<SubCommand<T>> getSubCommands() {
         return Collections.unmodifiableList(this.subCommands);
     }
 
@@ -59,21 +60,21 @@ public abstract class VCommand<T extends Plugin> {
         return Collections.unmodifiableList(this.requirements);
     }
 
-    protected VCommand<T> addSubCommand(@NotNull VCommand<T> subCommand) {
+    protected SubCommand<T> addSubCommand(@NotNull SubCommand<T> subCommand) {
         this.subCommands.add(subCommand);
         return this;
     }
 
-    protected VCommand<T> addRequirement(@NotNull CommandRequirement<T> requirement) {
+    protected SubCommand<T> addRequirement(@NotNull CommandRequirement<T> requirement) {
         this.requirements.add(requirement);
         return this;
     }
 
-    protected VCommand<T> setPlayerOnly() {
+    protected SubCommand<T> setPlayerOnly() {
         return this.addRequirement(new PlayerOnlyRequirement<>());
     }
 
-    protected VCommand<T> setPermissionRequired(@NotNull String permission) {
+    protected SubCommand<T> setPermissionRequired(@NotNull String permission) {
         return this.addRequirement(new PermissionRequirement<>(permission));
     }
 
@@ -137,7 +138,7 @@ public abstract class VCommand<T extends Plugin> {
             builder.requires(source -> this.requirements.stream().allMatch(req -> req.isMet(this.plugin, source)));
         }
 
-        for (VCommand<T> sub : this.subCommands) {
+        for (SubCommand<T> sub : this.subCommands) {
             builder.then(sub.build());
             if (includeSubCommandAliases) {
                 sub.buildAliases().forEach(builder::then);

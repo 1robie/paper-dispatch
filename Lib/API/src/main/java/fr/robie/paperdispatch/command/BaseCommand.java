@@ -1,10 +1,10 @@
-package fr.robie.paperdispatch;
+package fr.robie.paperdispatch.command;
 
 import org.bukkit.plugin.Plugin;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-public abstract class BaseCommand<T extends Plugin> extends VCommand<T> {
+public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
     @Nullable
     private String description = null;
 

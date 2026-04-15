@@ -1,7 +1,6 @@
-package fr.robie.paperdispatch;
+package fr.robie.paperdispatch.manager;
 
-import com.mojang.brigadier.tree.LiteralCommandNode;
-import io.papermc.paper.command.brigadier.CommandSourceStack;
+import fr.robie.paperdispatch.command.BaseCommand;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import org.bukkit.plugin.Plugin;
@@ -36,18 +35,14 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
             Commands registrar = event.registrar();
             for (BaseCommand<T> command : this.commands) {
                 try {
-                    this.registerCommand(registrar, command);
+                    registrar.register(command.build(), command.getDescription(), command.getAliases());
                 } catch (Exception e) {
+                    this.plugin.getLogger().severe("Failed to register command: " + command.getName());
                     e.printStackTrace();
                 }
             }
             this.commands.clear();
         });
         this.plugin.getLogger().info("Commands registered successfully!");
-    }
-
-    private void registerCommand(Commands registrar, BaseCommand<T> command) {
-        LiteralCommandNode<CommandSourceStack> commandNode = command.build();
-        registrar.register(commandNode, command.getDescription(), command.getAliases());
     }
 }
