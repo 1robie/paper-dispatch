@@ -8,6 +8,10 @@ public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
     @Nullable
     private String description = null;
 
+    public BaseCommand(@NotNull T plugin, @NotNull String name) {
+        super(plugin, name);
+    }
+
     public BaseCommand(@NotNull T plugin, @NotNull String name, @NotNull String... aliases) {
         super(plugin, name, aliases);
     }

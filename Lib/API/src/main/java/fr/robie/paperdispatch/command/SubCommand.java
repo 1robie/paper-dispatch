@@ -74,7 +74,7 @@ public abstract class SubCommand<T extends Plugin> {
         return this.addRequirement(new PlayerOnlyRequirement<>());
     }
 
-    protected SubCommand<T> setPermissionRequired(@NotNull String permission) {
+    protected SubCommand<T> setPermission(@NotNull String permission) {
         return this.addRequirement(new PermissionRequirement<>(permission));
     }
 
@@ -119,7 +119,28 @@ public abstract class SubCommand<T extends Plugin> {
         }
     }
 
-    protected abstract CommandResultType perform(@NotNull T plugin, CommandContext<CommandSourceStack> context) throws Exception;
+    @NotNull
+    protected abstract CommandResultType perform(@NotNull T plugin, CommandContext<CommandSourceStack> context);
+
+
+    @NotNull
+    public <U> Optional<U> getOptionalArgumentValue(@NotNull CommandContext<CommandSourceStack> context, @NotNull String argumentName, @NotNull Class<U> type) {
+        try {
+            return Optional.ofNullable(context.getArgument(argumentName, type));
+        } catch (IllegalArgumentException e) {
+            return Optional.empty();
+        }
+    }
+
+    @NotNull
+    public <U> U getRequiredArgumentValue(@NotNull CommandContext<CommandSourceStack> context, @NotNull String argumentName, @NotNull Class<U> type, @NotNull U defaultValue) {
+        try {
+            return context.getArgument(argumentName, type);
+        } catch (IllegalArgumentException e) {
+            return defaultValue;
+        }
+    }
+
 
     public LiteralCommandNode<CommandSourceStack> build() {
         return this.buildCommandNode(this.name, true);
@@ -158,6 +179,7 @@ public abstract class SubCommand<T extends Plugin> {
 
     @FunctionalInterface
     public interface ArgumentExecutor<T extends Plugin> {
+        @NotNull
         CommandResultType execute(T plugin, CommandContext<CommandSourceStack> context) throws Exception;
     }
 }
