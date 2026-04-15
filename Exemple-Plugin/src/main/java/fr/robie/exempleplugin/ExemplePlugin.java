@@ -1,6 +1,6 @@
 package fr.robie.exempleplugin;
 
-import fr.robie.exempleplugin.command.TestCommand;
+import fr.robie.exempleplugin.command.ExempleCommand;
 import fr.robie.paperdispatch.manager.CommandManager;
 import fr.robie.paperdispatch.manager.ICommandManager;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -12,8 +12,7 @@ public class ExemplePlugin extends JavaPlugin {
     public void onEnable() {
         this.getLogger().info("ExemplePlugin enabled!");
 
-        this.commandManager.registerCommand(new TestCommand(this));
-        this.commandManager.registerCommand(new fr.robie.exempleplugin.command.Test2(this));
+        this.commandManager.registerCommand(new ExempleCommand(this));
 
         this.commandManager.registerCommands();
     }
