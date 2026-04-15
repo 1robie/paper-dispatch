@@ -4,9 +4,9 @@ import org.bukkit.plugin.Plugin;
 import org.jetbrains.annotations.NotNull;
 
 public interface ICommandManager<T extends Plugin> {
-    void unregisterCommand(@NotNull VCommand<T> command);
+    void unregisterCommand(@NotNull BaseCommand<T> command);
 
-    void registerCommand(@NotNull VCommand<T> command);
+    void registerCommand(@NotNull BaseCommand<T> command);
 
     void registerCommands();
 }

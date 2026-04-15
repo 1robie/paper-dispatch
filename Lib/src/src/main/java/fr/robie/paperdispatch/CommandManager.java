@@ -13,19 +13,19 @@ import java.util.List;
 public class CommandManager<T extends Plugin> implements ICommandManager<T> {
     private final T plugin;
 
-    private final List<VCommand<T>> commands = new ArrayList<>();
+    private final List<BaseCommand<T>> commands = new ArrayList<>();
 
     public CommandManager(@NotNull T plugin) {
         this.plugin = plugin;
     }
 
     @Override
-    public void registerCommand(@NotNull VCommand<T> command) {
+    public void registerCommand(@NotNull BaseCommand<T> command) {
         this.commands.add(command);
     }
 
     @Override
-    public void unregisterCommand(@NotNull VCommand<T> command) {
+    public void unregisterCommand(@NotNull BaseCommand<T> command) {
         this.commands.remove(command);
     }
 
@@ -34,7 +34,7 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
         this.plugin.getLogger().info("Registering " + this.commands.size() + " commands...");
         this.plugin.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
             Commands registrar = event.registrar();
-            for (VCommand<T> command : this.commands) {
+            for (BaseCommand<T> command : this.commands) {
                 try {
                     this.registerCommand(registrar, command);
                 } catch (Exception e) {
@@ -46,7 +46,7 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
         this.plugin.getLogger().info("Commands registered successfully!");
     }
 
-    private void registerCommand(Commands registrar, VCommand<T> command) {
+    private void registerCommand(Commands registrar, BaseCommand<T> command) {
         LiteralCommandNode<CommandSourceStack> commandNode = command.build();
         registrar.register(commandNode, command.getDescription(), command.getAliases());
     }

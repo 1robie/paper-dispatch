@@ -3,13 +3,13 @@ package fr.robie.exempleplugin.command;
 import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import fr.robie.exempleplugin.ExemplePlugin;
+import fr.robie.paperdispatch.BaseCommand;
 import fr.robie.paperdispatch.CommandResultType;
-import fr.robie.paperdispatch.VCommand;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import org.jspecify.annotations.NonNull;
 
-public class Test2 extends VCommand<ExemplePlugin> {
+public class Test2 extends BaseCommand<ExemplePlugin> {
 
     public Test2(@NonNull ExemplePlugin plugin) {
         super(plugin, "test2", "t2");
@@ -18,7 +18,7 @@ public class Test2 extends VCommand<ExemplePlugin> {
     }
 
     @Override
-    protected CommandResultType perform(@NonNull ExemplePlugin plugin, CommandContext<CommandSourceStack> context) {
+    protected CommandResultType perform(@NonNull ExemplePlugin plugin, CommandContext<CommandSourceStack> context) throws Exception {
         context.getSource().getSender().sendMessage("Test2 command executed!");
 
         try {
