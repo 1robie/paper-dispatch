@@ -18,6 +18,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 
+@SuppressWarnings({"unused", "UnusedReturnValue", "SameParameterValue"})
 public abstract class SubCommand<T extends Plugin> {
 
     protected final T plugin;

@@ -16,6 +16,7 @@ import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 
+@SuppressWarnings("unused")
 public class EnumArgument<E extends Enum<E>> implements CustomArgumentType.Converted<Enum<E>, String> {
     private final Class<E> enumClass;
     private final DynamicCommandExceptionType invalidEnumException;
