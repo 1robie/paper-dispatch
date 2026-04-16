@@ -1,6 +1,7 @@
 package fr.robie.paperdispatch.command;
 
 import com.mojang.brigadier.Command;
+import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.builder.ArgumentBuilder;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
@@ -25,6 +26,7 @@ public abstract class SubCommand<T extends Plugin> {
 
     private final List<SubCommand<T>> subCommands = new ArrayList<>();
     private final List<CommandRequirement<T>> requirements = new ArrayList<>();
+    private boolean requiresConfirmation = false;
 
     @Nullable
     private ArgumentBuilder<CommandSourceStack, ?> argumentChain = null;
@@ -78,6 +80,14 @@ public abstract class SubCommand<T extends Plugin> {
         return this.addRequirement(new PermissionRequirement<>(permission));
     }
 
+    protected SubCommand<T> setRequiresConfirmation(boolean requiresConfirmation) {
+        this.requiresConfirmation = requiresConfirmation;
+        return this;
+    }
+
+    protected <U> void addRequiredArgument(final @NotNull String name, final @NotNull ArgumentType<U> argumentType) {
+        this.addRequiredArgument(Commands.argument(name, argumentType));
+    }
 
     protected void addRequiredArgument(@NotNull ArgumentBuilder<CommandSourceStack, ?> argument) {
         this.addRequiredArgument(argument, this::perform);
@@ -94,6 +104,10 @@ public abstract class SubCommand<T extends Plugin> {
         } else {
             this.argumentChain.then(argument);
         }
+    }
+
+    protected <U> void addOptionalArgument(final @NotNull String name, final @NotNull ArgumentType<U> argumentType) {
+        this.addOptionalArgument(Commands.argument(name, argumentType));
     }
 
     protected void addOptionalArgument(@NotNull ArgumentBuilder<CommandSourceStack, ?> argument) {
@@ -156,7 +170,11 @@ public abstract class SubCommand<T extends Plugin> {
         LiteralArgumentBuilder<CommandSourceStack> builder = Commands.literal(literal);
 
         if (!this.requirements.isEmpty()) {
-            builder.requires(source -> this.requirements.stream().allMatch(req -> req.isMet(this.plugin, source)));
+            if (this.requiresConfirmation) {
+                builder.requires(Commands.restricted(source -> this.requirements.stream().anyMatch(req -> req.isMet(this.plugin, source))));
+            } else {
+                builder.requires(source -> this.requirements.stream().anyMatch(req -> req.isMet(this.plugin, source)));
+            }
         }
 
         for (SubCommand<T> sub : this.subCommands) {
