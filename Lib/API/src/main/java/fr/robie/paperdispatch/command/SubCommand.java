@@ -1,5 +1,6 @@
 package fr.robie.paperdispatch.command;
 
+import com.google.common.base.Preconditions;
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.builder.ArgumentBuilder;
@@ -34,12 +35,15 @@ public abstract class SubCommand<T extends Plugin> {
     private final List<ArgumentBuilder<CommandSourceStack, ?>> optionalArguments = new ArrayList<>();
 
     protected SubCommand(@NotNull T plugin, @NotNull String name) {
+        Preconditions.checkNotNull(plugin, "Plugin cannot be null");
+        Preconditions.checkNotNull(name, "Command name cannot be null");
         this.plugin = plugin;
         this.name = name;
     }
 
     protected SubCommand(@NotNull T plugin, @NotNull String name, @NotNull String... aliases) {
         this(plugin, name);
+        Preconditions.checkNotNull(aliases, "Aliases cannot be null");
         this.aliases.addAll(Arrays.asList(aliases));
     }
 
@@ -64,11 +68,13 @@ public abstract class SubCommand<T extends Plugin> {
     }
 
     protected SubCommand<T> addSubCommand(@NotNull SubCommand<T> subCommand) {
+        Preconditions.checkNotNull(subCommand, "SubCommand cannot be null");
         this.subCommands.add(subCommand);
         return this;
     }
 
     protected SubCommand<T> addRequirement(@NotNull CommandRequirement<T> requirement) {
+        Preconditions.checkNotNull(requirement, "CommandRequirement cannot be null");
         this.requirements.add(requirement);
         return this;
     }
@@ -78,6 +84,7 @@ public abstract class SubCommand<T extends Plugin> {
     }
 
     protected SubCommand<T> setPermission(@NotNull String permission) {
+        Preconditions.checkNotNull(permission, "Permission cannot be null");
         return this.addRequirement(new PermissionRequirement<>(permission));
     }
 
@@ -87,10 +94,13 @@ public abstract class SubCommand<T extends Plugin> {
     }
 
     protected <U> void addRequiredArgument(final @NotNull String name, final @NotNull ArgumentType<U> argumentType) {
+        Preconditions.checkNotNull(name, "Argument name cannot be null");
+        Preconditions.checkNotNull(argumentType, "Argument type cannot be null");
         this.addRequiredArgument(Commands.argument(name, argumentType));
     }
 
     protected void addRequiredArgument(@NotNull ArgumentBuilder<CommandSourceStack, ?> argument) {
+        Preconditions.checkNotNull(argument, "Argument cannot be null");
         this.addRequiredArgument(argument, this::perform);
     }
 
@@ -108,10 +118,13 @@ public abstract class SubCommand<T extends Plugin> {
     }
 
     protected <U> void addOptionalArgument(final @NotNull String name, final @NotNull ArgumentType<U> argumentType) {
+        Preconditions.checkNotNull(name, "Argument name cannot be null");
+        Preconditions.checkNotNull(argumentType, "Argument type cannot be null");
         this.addOptionalArgument(Commands.argument(name, argumentType));
     }
 
     protected void addOptionalArgument(@NotNull ArgumentBuilder<CommandSourceStack, ?> argument) {
+        Preconditions.checkNotNull(argument, "Argument cannot be null");
         this.addOptionalArgument(argument, this::perform);
     }
 
@@ -135,11 +148,15 @@ public abstract class SubCommand<T extends Plugin> {
     }
 
     @NotNull
-    protected abstract CommandResultType perform(@NotNull T plugin, CommandContext<CommandSourceStack> context);
+    protected abstract CommandResultType perform(@NotNull T plugin, @NotNull CommandContext<CommandSourceStack> context);
 
 
     @NotNull
     public <U> Optional<U> getOptionalArgumentValue(@NotNull CommandContext<CommandSourceStack> context, @NotNull String argumentName, @NotNull Class<U> type) {
+        Preconditions.checkNotNull(context, "CommandContext cannot be null");
+        Preconditions.checkNotNull(argumentName, "Argument name cannot be null");
+        Preconditions.checkNotNull(type, "Argument type cannot be null");
+
         try {
             return Optional.ofNullable(context.getArgument(argumentName, type));
         } catch (IllegalArgumentException e) {
@@ -149,6 +166,11 @@ public abstract class SubCommand<T extends Plugin> {
 
     @NotNull
     public <U> U getRequiredArgumentValue(@NotNull CommandContext<CommandSourceStack> context, @NotNull String argumentName, @NotNull Class<U> type, @NotNull U defaultValue) {
+        Preconditions.checkNotNull(context, "CommandContext cannot be null");
+        Preconditions.checkNotNull(argumentName, "Argument name cannot be null");
+        Preconditions.checkNotNull(type, "Argument type cannot be null");
+        Preconditions.checkNotNull(defaultValue, "Default value cannot be null");
+
         try {
             return context.getArgument(argumentName, type);
         } catch (IllegalArgumentException e) {
@@ -161,7 +183,7 @@ public abstract class SubCommand<T extends Plugin> {
         return this.buildCommandNode(this.name, true);
     }
 
-    public List<LiteralCommandNode<CommandSourceStack>> buildAliases() {
+    private List<LiteralCommandNode<CommandSourceStack>> buildAliases() {
         return this.aliases.stream()
                 .map(alias -> this.buildCommandNode(alias, false))
                 .toList();
@@ -172,9 +194,9 @@ public abstract class SubCommand<T extends Plugin> {
 
         if (!this.requirements.isEmpty()) {
             if (this.requiresConfirmation) {
-                builder.requires(Commands.restricted(source -> this.requirements.stream().anyMatch(req -> req.isMet(this.plugin, source))));
+                builder.requires(Commands.restricted(source -> this.requirements.stream().allMatch(req -> req.isMet(this.plugin, source))));
             } else {
-                builder.requires(source -> this.requirements.stream().anyMatch(req -> req.isMet(this.plugin, source)));
+                builder.requires(source -> this.requirements.stream().allMatch(req -> req.isMet(this.plugin, source)));
             }
         }
 

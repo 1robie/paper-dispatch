@@ -18,7 +18,7 @@ public class ExempleCommand extends BaseCommand<ExemplePlugin> {
     }
 
     @Override
-    protected @NotNull CommandResultType perform(@NonNull ExemplePlugin plugin, CommandContext<CommandSourceStack> context) {
+    protected @NotNull CommandResultType perform(@NonNull ExemplePlugin plugin, @NotNull CommandContext<CommandSourceStack> context) {
 
         context.getSource().getSender().sendMessage("Hello, this is an example command!");
 

@@ -28,7 +28,7 @@ public class ExempleSubCommand extends SubCommand<ExemplePlugin> {
     }
 
     @Override
-    protected @NotNull CommandResultType perform(@NonNull ExemplePlugin plugin, CommandContext<CommandSourceStack> context) {
+    protected @NotNull CommandResultType perform(@NonNull ExemplePlugin plugin, @NotNull CommandContext<CommandSourceStack> context) {
         Player player = (Player) context.getSource().getSender();
 
         String arg1 = context.getArgument("arg1", String.class);// Get the value of the required argument "arg1"
