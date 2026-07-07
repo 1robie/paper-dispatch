@@ -41,11 +41,11 @@ development.
 <dependency>
     <groupId>com.github.1robie.Paper-Dispatch</groupId>
     <artifactId>paper-dispatch</artifactId>
-    <version>v0.0.1</version>
+    <version>1.0.1</version>
 </dependency>
 ```
 
-> Replace `v0.0.1` with the [latest release tag](https://github.com/1robie/Paper-Dispatch/releases).
+> Replace `1.0.1` with the [latest release tag](https://github.com/1robie/Paper-Dispatch/releases).
 
 ---
 
