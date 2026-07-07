@@ -1,16 +1,14 @@
 package fr.robie.exempleplugin.command;
 
-import com.mojang.brigadier.context.CommandContext;
 import fr.robie.exempleplugin.ExemplePlugin;
-import fr.robie.paperdispatch.CommandResultType;
+import fr.robie.paperdispatch.command.CommandResultType;
 import fr.robie.paperdispatch.command.BaseCommand;
-import io.papermc.paper.command.brigadier.CommandSourceStack;
+import fr.robie.paperdispatch.command.CommandDispatch;
 import org.jetbrains.annotations.NotNull;
-import org.jspecify.annotations.NonNull;
 
 public class ExempleCommand extends BaseCommand<ExemplePlugin> {
 
-    public ExempleCommand(@NonNull ExemplePlugin plugin) {
+    public ExempleCommand(@NotNull ExemplePlugin plugin) {
         super(plugin, "exemple", "ex");
         this.setDescription("An example command");
 
@@ -18,10 +16,8 @@ public class ExempleCommand extends BaseCommand<ExemplePlugin> {
     }
 
     @Override
-    protected @NotNull CommandResultType perform(@NonNull ExemplePlugin plugin, @NotNull CommandContext<CommandSourceStack> context) {
-
-        context.getSource().getSender().sendMessage("Hello, this is an example command!");
-
+    protected @NotNull CommandResultType perform(@NotNull CommandDispatch<ExemplePlugin> dispatch) {
+        dispatch.getSender().sendMessage("Hello, this is an example command!");
         return CommandResultType.SUCCESS;
     }
 }
