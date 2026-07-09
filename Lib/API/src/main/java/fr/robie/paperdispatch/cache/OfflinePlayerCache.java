@@ -3,6 +3,7 @@ package fr.robie.paperdispatch.cache;
 import com.google.common.base.Preconditions;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheStats;
 import com.google.common.collect.BiMap;
 import com.google.common.collect.HashBiMap;
 import com.google.common.collect.Maps;
@@ -31,6 +32,7 @@ import java.time.Duration;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * A two-tier offline player cache that provides fast UUID ↔ name resolution
@@ -85,8 +87,7 @@ public final class OfflinePlayerCache implements Listener {
 
     private static final String MOJANG_PROFILE_URL = "https://sessionserver.mojang.com/session/minecraft/profile/";
 
-    @Nullable
-    private static OfflinePlayerCache globalInstance;
+    private static final AtomicReference<OfflinePlayerCache> globalInstance = new AtomicReference<>();
 
     private final Cache<UUID, OfflinePlayer> playerCache;
 
@@ -96,10 +97,13 @@ public final class OfflinePlayerCache implements Listener {
 
     private final Plugin plugin;
 
+    private final Duration mojangTimeout;
+
     private boolean registered = false;
 
     private OfflinePlayerCache(Builder builder) {
         this.plugin = builder.plugin;
+        this.mojangTimeout = builder.mojangTimeout;
         this.playerCache = builder.buildCache();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(builder.mojangTimeout)
@@ -172,16 +176,55 @@ public final class OfflinePlayerCache implements Listener {
         }
     }
 
-    private void addToCache(@NotNull UUID playerId, @NotNull String playerName) {
+    public void addToCache(@NotNull UUID playerId, @NotNull String playerName) {
         Preconditions.checkNotNull(playerId, "playerId cannot be null");
         Preconditions.checkNotNull(playerName, "playerName cannot be null");
 
         UUID previousOwner = this.offlinePlayers.inverse().get(playerName);
         this.offlinePlayers.forcePut(playerId, playerName);
+        this.playerCache.invalidate(playerId);
 
         if (previousOwner != null && !previousOwner.equals(playerId)) {
             this.refreshStaleOwnerAsync(previousOwner);
         }
+    }
+
+    /**
+     * Clears the bounded {@link OfflinePlayer} cache and the unbounded
+     * UUID ↔ name index. No re-population is performed.
+     */
+    public void clear() {
+        this.playerCache.invalidateAll();
+        this.playerCache.cleanUp();
+        this.offlinePlayers.clear();
+    }
+
+    /**
+     * Fully resets the cache: clears all entries and re-populates the
+     * name index from {@code Bukkit.getOfflinePlayers()}. The bounded
+     * {@link OfflinePlayer} cache is left empty and will re-fill on
+     * demand via {@link #get}.
+     */
+    public void reset() {
+        this.clear();
+        for (OfflinePlayer offlinePlayer : this.plugin.getServer().getOfflinePlayers()) {
+            if (offlinePlayer.getName() != null) {
+                this.offlinePlayers.forcePut(offlinePlayer.getUniqueId(), offlinePlayer.getName());
+            }
+        }
+    }
+
+    /**
+     * Returns statistics about the bounded {@link OfflinePlayer} cache,
+     * such as hit rate, miss count, load times, etc.
+     * <p>The returned object is a snapshot; statistics are collected only
+     * when {@link Builder#recordStats} is enabled.
+     *
+     * @return the current cache stats
+     */
+    @NotNull
+    public CacheStats stats() {
+        return this.playerCache.stats();
     }
 
     private void refreshStaleOwnerAsync(@NotNull UUID staleId) {
@@ -189,7 +232,7 @@ public final class OfflinePlayerCache implements Listener {
             String trimmed = staleId.toString().replace("-", "");
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(MOJANG_PROFILE_URL + trimmed))
-                    .timeout(Duration.ofSeconds(5))
+                    .timeout(this.mojangTimeout)
                     .GET()
                     .build();
 
@@ -252,9 +295,13 @@ public final class OfflinePlayerCache implements Listener {
      */
     public static void install(@NotNull Plugin plugin) {
         Preconditions.checkNotNull(plugin, "Plugin cannot be null");
+        if (globalInstance.get() != null) {
+            plugin.getLogger().warning("OfflinePlayerCache global instance already set - install() called more than once.");
+            return;
+        }
         OfflinePlayerCache cache = builder(plugin).build();
         cache.register();
-        globalInstance = cache;
+        globalInstance.set(cache);
     }
 
     /**
@@ -267,7 +314,7 @@ public final class OfflinePlayerCache implements Listener {
      */
     @Nullable
     public static OfflinePlayerCache getGlobalInstance() {
-        return globalInstance;
+        return globalInstance.get();
     }
 
     /**
@@ -326,6 +373,8 @@ public final class OfflinePlayerCache implements Listener {
 
         @NotNull
         private Duration mojangTimeout = Duration.ofSeconds(5);
+
+        private boolean recordStats = false;
 
         private Builder(@NotNull Plugin plugin) {
             this.plugin = plugin;
@@ -405,6 +454,20 @@ public final class OfflinePlayerCache implements Listener {
         }
 
         /**
+         * Enables Guava cache statistics collection (hit rate, miss count,
+         * load times, etc.). Default: {@code false}.
+         * <p>Retrieve stats via {@link OfflinePlayerCache#stats()}.
+         *
+         * @param recordStats {@code true} to enable statistics
+         * @return this builder
+         */
+        @NotNull
+        public Builder recordStats(boolean recordStats) {
+            this.recordStats = recordStats;
+            return this;
+        }
+
+        /**
          * Builds the cache instance. The instance is <b>not</b> registered as
          * a Bukkit event listener — call {@link OfflinePlayerCache#register()}
          * on the returned instance if you want the {@code PlayerJoinEvent}
@@ -438,6 +501,9 @@ public final class OfflinePlayerCache implements Listener {
             CacheBuilder<Object, Object> builder = CacheBuilder.newBuilder()
                     .maximumSize(this.maximumSize);
 
+            if (this.recordStats) {
+                builder.recordStats();
+            }
             if (this.expireAfterWrite != null) {
                 builder.expireAfterWrite(this.expireAfterWrite);
             }
