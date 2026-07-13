@@ -5,3 +5,4 @@ description: Exemple plugin to use dispatch command lib
 api-version: '1.21'
 bootstrapper: fr.robie.exempleplugin.ExemplePluginBootstrap
 loader: fr.robie.exempleplugin.ExemplePluginLoader
+folia-support: true

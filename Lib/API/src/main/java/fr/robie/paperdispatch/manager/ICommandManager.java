@@ -17,14 +17,14 @@ public interface ICommandManager<T extends Plugin> {
      *
      * @param command the command to unregister
      */
-    void unregisterCommand(@NotNull BaseCommand<T> command);
+    <Y extends Plugin> void unregisterCommand(@NotNull BaseCommand<Y> command);
 
     /**
      * Registers a command with the server.
      *
      * @param command the command to register
      */
-    void registerCommand(@NotNull BaseCommand<T> command);
+    <Y extends Plugin> void registerCommand(@NotNull BaseCommand<Y> command);
 
     /**
      * Registers a command built from a {@link BaseCommand.BaseCommandBuilder}.
@@ -35,15 +35,35 @@ public interface ICommandManager<T extends Plugin> {
      * @return the constructed {@link BaseCommand}
      */
     @NotNull
-    default BaseCommand<T> registerCommand(@NotNull BaseCommand.BaseCommandBuilder<T> builder) {
+    default <U extends Plugin> BaseCommand<U> registerCommand(@NotNull BaseCommand.BaseCommandBuilder<U> builder) {
         Preconditions.checkNotNull(builder, "Command builder cannot be null");
-        BaseCommand<T> command = builder.build();
+        BaseCommand<U> command = builder.build();
         this.registerCommand(command);
         return command;
     }
 
     /**
+     * Checks if a command with the given name (or alias) is already registered
+     * by the specified plugin.
+     *
+     * @param plugin the plugin owning the command
+     * @param name   the command name or alias
+     * @return {@code true} if registered, {@code false} otherwise
+     */
+    boolean isRegistered(@NotNull Plugin plugin, @NotNull String name);
+
+    /**
+     * Checks if the given command instance is already registered.
+     *
+     * @param command the command to check
+     * @return {@code true} if registered, {@code false} otherwise
+     */
+    boolean isRegistered(@NotNull BaseCommand<?> command);
+
+    /**
      * Bulk-registers all commands (typically called during plugin enable).
      */
     void registerCommands();
+
+    void unregisterCommands();
 }

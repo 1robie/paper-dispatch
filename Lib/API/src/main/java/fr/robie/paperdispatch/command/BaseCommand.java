@@ -18,6 +18,8 @@ import java.util.List;
  * @param <T> the plugin type
  */
 public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
+    private boolean reloadable = false;
+
     @Nullable
     private String description = null;
 
@@ -60,6 +62,27 @@ public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
     }
 
     /**
+     * Checks if this command is reloadable. Reloadable commands are removed
+     * when the command manager unregisters commands.
+     *
+     * @return {@code true} if reloadable, {@code false} otherwise
+     */
+    public boolean isReloadable() {
+        return this.reloadable;
+    }
+
+    /**
+     * Sets whether this command is reloadable.
+     *
+     * @param reloadable {@code true} if reloadable, {@code false} otherwise
+     * @return this instance for chaining
+     */
+    public BaseCommand<T> setReloadable(boolean reloadable) {
+        this.reloadable = reloadable;
+        return this;
+    }
+
+    /**
      * Creates a new {@link BaseCommandBuilder} for constructing a
      * {@link BaseCommand} with a description, without subclassing.
      *
@@ -87,6 +110,8 @@ public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
         @Nullable
         private String description;
 
+        private boolean reloadable = false;
+
         BaseCommandBuilder(@NotNull T plugin, @NotNull String name) {
             super(plugin, name);
         }
@@ -99,6 +124,18 @@ public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
         @NotNull
         public BaseCommandBuilder<T> description(@Nullable String description) {
             this.description = description;
+            return this;
+        }
+
+        /**
+         * Sets whether the command should be reloadable.
+         *
+         * @param reloadable {@code true} if reloadable, {@code false} otherwise
+         * @return this builder
+         */
+        @NotNull
+        public BaseCommandBuilder<T> reloadable(boolean reloadable) {
+            this.reloadable = reloadable;
             return this;
         }
 
@@ -180,7 +217,7 @@ public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
             return new BuiltBaseCommand<>(
                     this.plugin, this.name, this.aliases, this.description, this.flagValuePrefix,
                     this.subCommands, this.requirements, this.requiresConfirmation,
-                    this.flags, this.requiredArgs, this.optionalArgs, this.executor
+                    this.flags, this.requiredArgs, this.optionalArgs, this.executor, this.reloadable
             );
         }
     }
@@ -194,9 +231,9 @@ public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
                 @Nullable String flagValuePrefix,
                 List<SubCommand<T>> subCommands, List<CommandRequirement<T>> requirements,
                 boolean requiresConfirmation, List<Flag<?>> flags,
-                List<SubCommand.SubCommandBuilder.ArgumentDefinition> requiredArgs,
-                List<SubCommand.SubCommandBuilder.ArgumentDefinition> optionalArgs,
-                SubCommand.ArgumentExecutor<T> executor) {
+                List<SubCommandBuilder.ArgumentDefinition> requiredArgs,
+                List<SubCommandBuilder.ArgumentDefinition> optionalArgs,
+                ArgumentExecutor<T> executor, boolean reloadable) {
 
             super(plugin, name, aliases.toArray(new String[0]));
             this.executor = executor;
@@ -207,6 +244,8 @@ public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
             if (flagValuePrefix != null) {
                 this.setFlagValuePrefix(flagValuePrefix);
             }
+
+            this.setReloadable(reloadable);
 
             SubCommand.initializeBuilt(this, subCommands, requirements, requiresConfirmation, flags, requiredArgs, optionalArgs);
         }

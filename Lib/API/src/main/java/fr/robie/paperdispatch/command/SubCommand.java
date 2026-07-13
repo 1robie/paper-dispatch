@@ -27,6 +27,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 /**
@@ -44,11 +45,23 @@ import java.util.stream.Collectors;
  * <b>Warning — flag complexity:</b> The flag-tree builder generates a full
  * permutation of all flag orderings via recursive branching, producing
  * <b>O(n!)</b> nodes in the Brigadier tree where {@code n} is the number of
- * flags (aliases increase the constant factor). This is negligible for small
- * flag sets (n &le; 5) but may cause noticeable command-tree build time and
- * memory usage beyond that. Prefer few flags or use the generic
+ * flags (aliases increase the constant factor). Because this happens at every
+ * nesting level, and independently again for every alias of every command in
+ * the tree (each alias rebuilds its own subtree), the real blow-up across a
+ * deeply nested command with many aliases is closer to
+ * {@code O(n! × Π aliasCounts)} summed over the whole tree. This is negligible
+ * for small flag sets (n &le; 5) with few aliases, but adding a couple of
+ * aliases to a command with 4-5 flags multiplies cost noticeably. Prefer few
+ * flags, few aliases on flag-heavy commands, or use the generic
  * {@link fr.robie.paperdispatch.flag.Flags#argFlag(String, com.mojang.brigadier.arguments.ArgumentType)}
- * to keep the count low.
+ * to keep the flag count low.
+ * <p>
+ * <b>Thread-safety:</b> instances of this class are not thread-safe. All
+ * mutator methods ({@link #addFlag}, {@link #addFlags}, {@link #addSubCommand},
+ * {@link #addRequirement}, {@link #addRequiredArgument}, {@link #addOptionalArgument},
+ * etc.) are intended to be called once, single-threaded, during plugin
+ * initialization, before {@link #build()} is ever invoked. Calling them
+ * concurrently, or after the command has been registered, is not supported.
  *
  * @param <T> the plugin type
  */
@@ -68,8 +81,7 @@ public abstract class SubCommand<T extends Plugin> {
     private final List<Flag<?>> flags = new ArrayList<>();
     private final List<ExecutableNode<T>> executableNodes = new ArrayList<>();
 
-    @Nullable
-    private ArgumentBuilder<CommandSourceStack, ?> argumentChain = null;
+    private final List<ArgumentBuilder<CommandSourceStack, ?>> requiredArguments = new ArrayList<>();
     private final List<ArgumentBuilder<CommandSourceStack, ?>> optionalArguments = new ArrayList<>();
 
     /**
@@ -95,6 +107,14 @@ public abstract class SubCommand<T extends Plugin> {
     }
 
     /**
+     * @return the owning plugin
+     */
+    @NotNull
+    public T getPlugin() {
+        return this.plugin;
+    }
+
+    /**
      * @return the command name
      */
     @NotNull
@@ -103,35 +123,35 @@ public abstract class SubCommand<T extends Plugin> {
     }
 
     /**
-     * @return an unmodifiable collection of aliases
+     * @return an immutable snapshot of the aliases at the time of calling
      */
     @NotNull
     public Collection<String> getAliases() {
-        return Collections.unmodifiableSet(this.aliases);
+        return Set.copyOf(this.aliases);
     }
 
     /**
-     * @return an unmodifiable list of nested sub-commands
+     * @return an immutable snapshot of nested sub-commands at the time of calling
      */
     @NotNull
     public List<SubCommand<T>> getSubCommands() {
-        return Collections.unmodifiableList(this.subCommands);
+        return List.copyOf(this.subCommands);
     }
 
     /**
-     * @return an unmodifiable list of requirements
+     * @return an immutable snapshot of requirements at the time of calling
      */
     @NotNull
     public List<CommandRequirement<T>> getRequirements() {
-        return Collections.unmodifiableList(this.requirements);
+        return List.copyOf(this.requirements);
     }
 
     /**
-     * @return an unmodifiable list of registered flags
+     * @return an immutable snapshot of registered flags at the time of calling
      */
     @NotNull
     public List<Flag<?>> getFlags() {
-        return Collections.unmodifiableList(this.flags);
+        return List.copyOf(this.flags);
     }
 
     /**
@@ -204,7 +224,9 @@ public abstract class SubCommand<T extends Plugin> {
     }
 
     /**
-     * Creates and registers a boolean flag with the given name.
+     * Creates and registers a boolean flag with the given name. Delegates to
+     * {@link #addFlag(Flag)} so subclasses only need to override that one method
+     * to intercept every flag-registration path (collision checks, logging, etc.).
      *
      * @param name the flag name
      * @return this instance for chaining
@@ -212,10 +234,7 @@ public abstract class SubCommand<T extends Plugin> {
      */
     protected SubCommand<T> addFlag(@NotNull String name) {
         Preconditions.checkNotNull(name, "Flag name cannot be null");
-        Flag<?> flag = Flags.boolFlag(name);
-        this.checkNoCollision(flag);
-        this.flags.add(flag);
-        return this;
+        return this.addFlag(Flags.boolFlag(name));
     }
 
     /**
@@ -256,10 +275,14 @@ public abstract class SubCommand<T extends Plugin> {
      * @param name         the argument name
      * @param argumentType the Brigadier argument type
      * @param <U>          the argument value type
+     * @throws IllegalArgumentException if {@code name} starts with the reserved
+     *                                   {@link #flagValuePrefix}, which would collide with the
+     *                                   synthetic argument names generated internally for value flags
      */
     protected <U> void addRequiredArgument(final @NotNull String name, final @NotNull ArgumentType<U> argumentType) {
         Preconditions.checkNotNull(name, "Argument name cannot be null");
         Preconditions.checkNotNull(argumentType, "Argument type cannot be null");
+        this.checkNotReservedName(name);
         this.addRequiredArgument(Commands.argument(name, this.wrapIfFlagAware(argumentType)));
     }
 
@@ -286,12 +309,7 @@ public abstract class SubCommand<T extends Plugin> {
 
         argument.executes(ctx -> this.executeWithFlags(executor, ctx));
         this.executableNodes.add(new ExecutableNode<>(argument, executor));
-
-        if (this.argumentChain == null) {
-            this.argumentChain = argument;
-        } else {
-            this.argumentChain.then(argument);
-        }
+        this.requiredArguments.add(argument);
     }
 
     /**
@@ -300,10 +318,14 @@ public abstract class SubCommand<T extends Plugin> {
      * @param name         the argument name
      * @param argumentType the Brigadier argument type
      * @param <U>          the argument value type
+     * @throws IllegalArgumentException if {@code name} starts with the reserved
+     *                                   {@link #flagValuePrefix}, which would collide with the
+     *                                   synthetic argument names generated internally for value flags
      */
     protected <U> void addOptionalArgument(final @NotNull String name, final @NotNull ArgumentType<U> argumentType) {
         Preconditions.checkNotNull(name, "Argument name cannot be null");
         Preconditions.checkNotNull(argumentType, "Argument type cannot be null");
+        this.checkNotReservedName(name);
         this.addOptionalArgument(Commands.argument(name, this.wrapIfFlagAware(argumentType)));
     }
 
@@ -331,6 +353,16 @@ public abstract class SubCommand<T extends Plugin> {
         argument.executes(ctx -> this.executeWithFlags(executor, ctx));
         this.executableNodes.add(new ExecutableNode<>(argument, executor));
         this.optionalArguments.add(argument);
+    }
+
+    private void checkNotReservedName(@NotNull String name) {
+        Preconditions.checkArgument(
+                !name.startsWith(this.flagValuePrefix),
+                "Argument name '%s' collides with the reserved flag-value prefix '%s' "
+                        + "used internally for value-flag arguments; choose a different name "
+                        + "or change the prefix via setFlagValuePrefix(...)",
+                name, this.flagValuePrefix
+        );
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -380,9 +412,10 @@ public abstract class SubCommand<T extends Plugin> {
             CommandResultType result = executor.execute(dispatch);
             return result == CommandResultType.FAILURE ? 0 : Command.SINGLE_SUCCESS;
         } catch (Exception e) {
-            this.plugin.getLogger().severe("Error executing command '" + this.name + "': " + e.getMessage());
-            e.printStackTrace();
-            return Command.SINGLE_SUCCESS;
+            // An exception during execution is a failure, not a success - report it as such
+            // to Brigadier/the command source instead of returning Command.SINGLE_SUCCESS.
+            this.plugin.getLogger().log(Level.SEVERE, "Error executing command '" + this.name + "'", e);
+            return 0;
         }
     }
 
@@ -413,10 +446,16 @@ public abstract class SubCommand<T extends Plugin> {
         return new FlagContext(values, explicit);
     }
 
+    /**
+     * Returns every literal token (primary name + aliases) that can trigger this flag,
+     * consistently formatted via {@link Flag#toFlagToken(String)} for both the name and
+     * its aliases so the actual registered tokens always match what collision-error
+     * messages describe.
+     */
     @NotNull
     private List<String> flagTokens(@NotNull Flag<?> flag) {
         List<String> tokens = new ArrayList<>();
-        tokens.add("--" + flag.getName());
+        tokens.add(Flag.toFlagToken(flag.getName()));
         for (String alias : flag.getAliases()) {
             tokens.add(Flag.toFlagToken(alias));
         }
@@ -507,16 +546,44 @@ public abstract class SubCommand<T extends Plugin> {
             }
         }
 
-        if (this.argumentChain != null) {
-            this.optionalArguments.forEach(this.argumentChain::then);
-            this.attachFlagNodes();
-            builder.then(this.argumentChain);
-        } else {
+        if (this.requiredArguments.isEmpty() && this.optionalArguments.isEmpty()) {
+            builder.executes(ctx -> this.executeWithFlags(this::perform, ctx));
+            this.attachFlagNodesToBuilder(builder);
+            return builder.build();
+        }
+
+        // Attach flag branches to every argument-level builder BEFORE any of them are
+        // chained together via `.then()`. Brigadier's ArgumentBuilder#then(child) snapshots
+        // the child immediately into an immutable CommandNode, so flags (or further children)
+        // added to a builder *after* it has already been `.then()`'d onto something else would
+        // silently be lost.
+        this.attachFlagNodes();
+
+        if (this.requiredArguments.isEmpty()) {
+            // No required arguments: the base literal itself is executable and flag-capable
+            // (e.g. `/cmd --flag`), with optional arguments - each already flag-capable in
+            // their own right - branching directly off it.
             builder.executes(ctx -> this.executeWithFlags(this::perform, ctx));
             this.attachFlagNodesToBuilder(builder);
             this.optionalArguments.forEach(builder::then);
+            return builder.build();
         }
 
+        // Build the required-argument chain tail-first, so each node's own children (its flag
+        // branches and, at the very tail, the optional arguments) are fully attached before that
+        // node itself gets snapshotted as a child of the previous node in the chain.
+        ArgumentBuilder<CommandSourceStack, ?> tail = null;
+        for (int i = this.requiredArguments.size() - 1; i >= 0; i--) {
+            ArgumentBuilder<CommandSourceStack, ?> current = this.requiredArguments.get(i);
+            if (tail == null) {
+                this.optionalArguments.forEach(current::then);
+            } else {
+                current.then(tail);
+            }
+            tail = current;
+        }
+
+        builder.then(tail);
         return builder.build();
     }
 
@@ -630,25 +697,25 @@ public abstract class SubCommand<T extends Plugin> {
          * arguments to fall through to the flag-parsing tree.
          */
         @Override
-            public @NotNull String convert(@NotNull String nativeValue) throws CommandSyntaxException {
-                for (Flag<?> flag : this.flags) {
-                    if (flag.matches(nativeValue)) {
-                        throw CommandSyntaxException.BUILT_IN_EXCEPTIONS.dispatcherUnknownArgument().create();
-                    }
+        public @NotNull String convert(@NotNull String nativeValue) throws CommandSyntaxException {
+            for (Flag<?> flag : this.flags) {
+                if (flag.matches(nativeValue)) {
+                    throw CommandSyntaxException.BUILT_IN_EXCEPTIONS.dispatcherUnknownArgument().create();
                 }
-                return nativeValue;
             }
-
-            @Override
-            public @NotNull ArgumentType<String> getNativeType() {
-                return this.delegate;
-            }
-
-            @Override
-            public <S> @NotNull CompletableFuture<Suggestions> listSuggestions(@NotNull CommandContext<S> context, @NotNull SuggestionsBuilder builder) {
-                return this.delegate.listSuggestions(context, builder);
-            }
+            return nativeValue;
         }
+
+        @Override
+        public @NotNull ArgumentType<String> getNativeType() {
+            return this.delegate;
+        }
+
+        @Override
+        public <S> @NotNull CompletableFuture<Suggestions> listSuggestions(@NotNull CommandContext<S> context, @NotNull SuggestionsBuilder builder) {
+            return this.delegate.listSuggestions(context, builder);
+        }
+    }
 
     /**
      * Returns the prefix used internally for flag-value argument names in the
@@ -940,7 +1007,7 @@ public abstract class SubCommand<T extends Plugin> {
             try {
                 return this.executor.execute(dispatch);
             } catch (Exception e) {
-                this.plugin.getLogger().severe("Error executing built command '" + this.getName() + "': " + e.getMessage());
+                this.plugin.getLogger().log(Level.SEVERE, "Error executing built command '" + this.getName() + "'", e);
                 return CommandResultType.FAILURE;
             }
         }
