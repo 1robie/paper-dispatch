@@ -228,7 +228,7 @@ public final class OfflinePlayerCache implements Listener {
     }
 
     private void refreshStaleOwnerAsync(@NotNull UUID staleId) {
-        Bukkit.getScheduler().runTaskAsynchronously(this.plugin, () -> {
+        Bukkit.getAsyncScheduler().runNow(this.plugin, task -> {
             String trimmed = staleId.toString().replace("-", "");
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(MOJANG_PROFILE_URL + trimmed))
