@@ -110,11 +110,13 @@ public final class OfflinePlayerCache implements Listener {
                 .build();
 
         if (builder.prePopulate) {
-            for (OfflinePlayer offlinePlayer : this.plugin.getServer().getOfflinePlayers()) {
-                if (offlinePlayer.getName() != null) {
-                    this.addToCache(offlinePlayer.getUniqueId(), offlinePlayer.getName());
+            Bukkit.getAsyncScheduler().runNow(this.plugin, task -> {
+                for (OfflinePlayer offlinePlayer : this.plugin.getServer().getOfflinePlayers()) {
+                    if (offlinePlayer.getName() != null) {
+                        this.addToCache(offlinePlayer.getUniqueId(), offlinePlayer.getName());
+                    }
                 }
-            }
+            });
         }
     }
 
@@ -207,11 +209,13 @@ public final class OfflinePlayerCache implements Listener {
      */
     public void reset() {
         this.clear();
-        for (OfflinePlayer offlinePlayer : this.plugin.getServer().getOfflinePlayers()) {
-            if (offlinePlayer.getName() != null) {
-                this.offlinePlayers.forcePut(offlinePlayer.getUniqueId(), offlinePlayer.getName());
+        Bukkit.getAsyncScheduler().runNow(this.plugin, task -> {
+            for (OfflinePlayer offlinePlayer : this.plugin.getServer().getOfflinePlayers()) {
+                if (offlinePlayer.getName() != null) {
+                    this.offlinePlayers.forcePut(offlinePlayer.getUniqueId(), offlinePlayer.getName());
+                }
             }
-        }
+        });
     }
 
     /**
