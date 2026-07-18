@@ -11,6 +11,7 @@ import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import io.papermc.paper.command.brigadier.MessageComponentSerializer;
 import io.papermc.paper.command.brigadier.argument.CustomArgumentType;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.jspecify.annotations.NonNull;
 
 import java.util.Locale;
@@ -27,7 +28,7 @@ import java.util.function.Function;
  *
  * @param <E> the enum type
  */
-public class EnumArgument<E extends Enum<E>> implements CustomArgumentType.Converted<Enum<E>, String> {
+public class EnumArgument<E extends Enum<E>> implements CustomArgumentType.Converted<E, String> {
     private final Class<E> enumClass;
     private final DynamicCommandExceptionType invalidEnumException;
 
@@ -38,7 +39,7 @@ public class EnumArgument<E extends Enum<E>> implements CustomArgumentType.Conve
      * @param enumClass the enum class
      */
     public EnumArgument(Class<E> enumClass) {
-        this(Preconditions.checkNotNull(enumClass, "Enum class cannot be null"), input -> Component.text("<red>Invalid value: " + input + "."));
+        this(Preconditions.checkNotNull(enumClass, "Enum class cannot be null"), input -> MiniMessage.miniMessage().deserialize("<red>Invalid value: " + input + "."));
     }
 
     /**
@@ -59,7 +60,7 @@ public class EnumArgument<E extends Enum<E>> implements CustomArgumentType.Conve
      * {@inheritDoc}
      */
     @Override
-    public @NonNull Enum<E> convert(@NonNull String input) throws CommandSyntaxException {
+    public @NonNull E convert(@NonNull String input) throws CommandSyntaxException {
         Preconditions.checkNotNull(input, "Input string cannot be null");
         try {
             return Enum.valueOf(this.enumClass, input.toUpperCase(Locale.ROOT));
