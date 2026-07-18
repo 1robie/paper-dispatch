@@ -50,24 +50,24 @@ import java.util.concurrent.CompletableFuture;
  * @see OfflinePlayerCache
  */
 public final class OfflinePlayerArgument implements CustomArgumentType.Converted<UUID, String> {
-    private final DynamicCommandExceptionType ERROR_UNKNOW_PLAYER;
+    private final DynamicCommandExceptionType ERROR_UNKNOWN_PLAYER;
 
     /**
      * Creates an argument with the default error message
      * {@code "Unknown player: <name>"}.
      */
     public OfflinePlayerArgument() {
-        this.ERROR_UNKNOW_PLAYER = new DynamicCommandExceptionType(name -> MessageComponentSerializer.message().serialize(Component.text("Unknown player: " + name).color(NamedTextColor.DARK_RED)));
+        this.ERROR_UNKNOWN_PLAYER = new DynamicCommandExceptionType(name -> MessageComponentSerializer.message().serialize(Component.text("Unknown player: " + name).color(NamedTextColor.DARK_RED)));
     }
 
     /**
      * Creates an argument with a custom error message.
      *
-     * @param errorUnknowPlayer the exception type used when a name is not found
+     * @param errorUnknownPlayer the exception type used when a name is not found
      */
-    public OfflinePlayerArgument(@NotNull DynamicCommandExceptionType errorUnknowPlayer) {
-        Preconditions.checkNotNull(errorUnknowPlayer, "Error message function cannot be null");
-        this.ERROR_UNKNOW_PLAYER = errorUnknowPlayer;
+    public OfflinePlayerArgument(@NotNull DynamicCommandExceptionType errorUnknownPlayer) {
+        Preconditions.checkNotNull(errorUnknownPlayer, "Error message function cannot be null");
+        this.ERROR_UNKNOWN_PLAYER = errorUnknownPlayer;
     }
 
     /**
@@ -84,7 +84,7 @@ public final class OfflinePlayerArgument implements CustomArgumentType.Converted
         OfflinePlayerCache cache = OfflinePlayerCache.getGlobalInstance();
         UUID playerId = cache != null ? cache.getUUID(nativeType) : null;
         if (playerId == null) {
-            throw this.ERROR_UNKNOW_PLAYER.create(nativeType);
+            throw this.ERROR_UNKNOWN_PLAYER.create(nativeType);
         }
         return playerId;
     }
