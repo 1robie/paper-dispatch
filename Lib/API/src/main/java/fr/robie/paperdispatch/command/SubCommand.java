@@ -412,8 +412,6 @@ public abstract class SubCommand<T extends Plugin> {
             CommandResultType result = executor.execute(dispatch);
             return result == CommandResultType.FAILURE ? 0 : Command.SINGLE_SUCCESS;
         } catch (Exception e) {
-            // An exception during execution is a failure, not a success - report it as such
-            // to Brigadier/the command source instead of returning Command.SINGLE_SUCCESS.
             this.plugin.getLogger().log(Level.SEVERE, "Error executing command '" + this.name + "'", e);
             return 0;
         }
@@ -559,24 +557,40 @@ public abstract class SubCommand<T extends Plugin> {
         // silently be lost.
         this.attachFlagNodes();
 
+        // Build the optional-argument chain tail-first, so each optional argument is sequential.
+        ArgumentBuilder<CommandSourceStack, ?> optionalChain = null;
+        if (!this.optionalArguments.isEmpty()) {
+            for (int i = this.optionalArguments.size() - 1; i >= 0; i--) {
+                ArgumentBuilder<CommandSourceStack, ?> current = this.optionalArguments.get(i);
+                if (optionalChain != null) {
+                    current.then(optionalChain);
+                }
+                optionalChain = current;
+            }
+        }
+
         if (this.requiredArguments.isEmpty()) {
             // No required arguments: the base literal itself is executable and flag-capable
             // (e.g. `/cmd --flag`), with optional arguments - each already flag-capable in
             // their own right - branching directly off it.
             builder.executes(ctx -> this.executeWithFlags(this::perform, ctx));
             this.attachFlagNodesToBuilder(builder);
-            this.optionalArguments.forEach(builder::then);
+            if (optionalChain != null) {
+                builder.then(optionalChain);
+            }
             return builder.build();
         }
 
         // Build the required-argument chain tail-first, so each node's own children (its flag
         // branches and, at the very tail, the optional arguments) are fully attached before that
-        // node itself gets snapshotted as a child of the previous node in the chain.
+        // node itself gets snapshot as a child of the previous node in the chain.
         ArgumentBuilder<CommandSourceStack, ?> tail = null;
         for (int i = this.requiredArguments.size() - 1; i >= 0; i--) {
             ArgumentBuilder<CommandSourceStack, ?> current = this.requiredArguments.get(i);
             if (tail == null) {
-                this.optionalArguments.forEach(current::then);
+                if (optionalChain != null) {
+                    current.then(optionalChain);
+                }
             } else {
                 current.then(tail);
             }
@@ -754,7 +768,7 @@ public abstract class SubCommand<T extends Plugin> {
      * Use {@link SubCommand#builder(Plugin, String)} to obtain an instance.
      * For commands that need a description, use
      * {@link BaseCommand#builder(Plugin, String)} which returns a
-     * {@link BaseCommandBuilder}.
+     * {@link fr.robie.paperdispatch.command.BaseCommand.BaseCommandBuilder}.
      *
      * @param <T> the plugin type
      */
@@ -950,7 +964,6 @@ public abstract class SubCommand<T extends Plugin> {
         }
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
     static <T extends Plugin> void initializeBuilt(
             @NotNull SubCommand<T> cmd,
             @NotNull List<SubCommand<T>> subCommands,
@@ -978,7 +991,6 @@ public abstract class SubCommand<T extends Plugin> {
         }
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
     private static final class BuiltSubCommand<T extends Plugin> extends SubCommand<T> {
 
         private final ArgumentExecutor<T> executor;
