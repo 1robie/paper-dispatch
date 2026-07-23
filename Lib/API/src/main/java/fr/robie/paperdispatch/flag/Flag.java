@@ -37,6 +37,7 @@ public abstract class Flag<T> {
      */
     protected Flag(@NotNull String name) {
         Preconditions.checkNotNull(name, "Flag name cannot be null");
+        Preconditions.checkArgument(!name.isEmpty(), "Flag name cannot be empty");
         this.name = name;
     }
 
@@ -178,10 +179,9 @@ public abstract class Flag<T> {
         for (String value : values) {
             Preconditions.checkNotNull(value, "Suggestion value entry cannot be null");
         }
-        String[] list = values;
         this.suggestionProvider = (context, builder) -> {
             String remaining = builder.getRemaining().toLowerCase(java.util.Locale.ROOT);
-            for (String value : list) {
+            for (String value : values) {
                 if (remaining.isEmpty() || value.toLowerCase(java.util.Locale.ROOT).startsWith(remaining)) {
                     builder.suggest(value);
                 }

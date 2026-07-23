@@ -53,7 +53,14 @@ public class EnumArgument<E extends Enum<E>> implements CustomArgumentType.Conve
         Preconditions.checkNotNull(enumClass, "Enum class cannot be null");
         Preconditions.checkNotNull(errorMessageFunction, "Error message function cannot be null");
         this.enumClass = enumClass;
-        this.invalidEnumException = new DynamicCommandExceptionType(input -> MessageComponentSerializer.message().serialize(errorMessageFunction.apply(input)));
+        this.invalidEnumException = new DynamicCommandExceptionType(input -> {
+            try {
+                return MessageComponentSerializer.message().serialize(errorMessageFunction.apply(input));
+            } catch (Exception | LinkageError e) {
+                String text = errorMessageFunction.apply(input).toString();
+                return (com.mojang.brigadier.Message) () -> text;
+            }
+        });
     }
 
     /**

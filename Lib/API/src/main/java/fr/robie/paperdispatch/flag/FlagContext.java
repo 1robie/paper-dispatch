@@ -75,7 +75,6 @@ public class FlagContext {
      * @throws NoSuchElementException if the flag was neither present nor has a default
      */
     @NotNull
-    @SuppressWarnings("unchecked")
     public <T> T getValue(@NotNull String name, @NotNull Class<T> type) {
         Preconditions.checkNotNull(name, "Flag name cannot be null");
         Preconditions.checkNotNull(type, "Value type cannot be null");
@@ -96,7 +95,6 @@ public class FlagContext {
      * @return the flag value or {@code fallback}
      */
     @NotNull
-    @SuppressWarnings("unchecked")
     public <T> T getValue(@NotNull String name, @NotNull Class<T> type, @NotNull T fallback) {
         Preconditions.checkNotNull(name, "Flag name cannot be null");
         Preconditions.checkNotNull(type, "Value type cannot be null");
@@ -117,7 +115,6 @@ public class FlagContext {
      * @return optional flag value
      */
     @NotNull
-    @SuppressWarnings("unchecked")
     public <T> Optional<T> getOptionalValue(@NotNull String name, @NotNull Class<T> type) {
         Preconditions.checkNotNull(name, "Flag name cannot be null");
         Preconditions.checkNotNull(type, "Value type cannot be null");

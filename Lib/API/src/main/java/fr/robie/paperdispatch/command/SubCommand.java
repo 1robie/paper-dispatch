@@ -91,6 +91,7 @@ public abstract class SubCommand<T extends Plugin> {
     protected SubCommand(@NotNull T plugin, @NotNull String name) {
         Preconditions.checkNotNull(plugin, "Plugin cannot be null");
         Preconditions.checkNotNull(name, "Command name cannot be null");
+        Preconditions.checkArgument(!name.isEmpty(), "Command name cannot be empty");
         this.plugin = plugin;
         this.name = name;
     }
@@ -103,6 +104,9 @@ public abstract class SubCommand<T extends Plugin> {
     protected SubCommand(@NotNull T plugin, @NotNull String name, @NotNull String... aliases) {
         this(plugin, name);
         Preconditions.checkNotNull(aliases, "Aliases cannot be null");
+        for (String alias : aliases) {
+            Preconditions.checkNotNull(alias, "Alias entry cannot be null");
+        }
         this.aliases.addAll(Arrays.asList(aliases));
     }
 

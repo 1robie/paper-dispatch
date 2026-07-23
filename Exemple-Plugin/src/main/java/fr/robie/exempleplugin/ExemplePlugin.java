@@ -23,6 +23,8 @@ public class ExemplePlugin extends JavaPlugin implements Listener {
 
     @Override
     public void onDisable() {
+        this.commandManager.unregisterCommands();
+        OfflinePlayerCache.uninstall(this);
         this.getLogger().info("ExemplePlugin disabled!");
     }
 }

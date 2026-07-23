@@ -71,8 +71,8 @@ import org.jetbrains.annotations.NotNull;
  */
 public final class Flags {
 
-    @SuppressWarnings("unused")
     private Flags() {
+        throw new UnsupportedOperationException("This is a utility class and cannot be instantiated");
     }
 
     /**

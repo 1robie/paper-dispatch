@@ -17,6 +17,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.plugin.Plugin;
@@ -99,7 +100,7 @@ public final class OfflinePlayerCache implements Listener {
 
     private final Duration mojangTimeout;
 
-    private boolean registered = false;
+    private volatile boolean registered = false;
 
     private OfflinePlayerCache(Builder builder) {
         this.plugin = builder.plugin;
@@ -134,32 +135,52 @@ public final class OfflinePlayerCache implements Listener {
     @Nullable
     public String getName(@NotNull UUID playerId) {
         Preconditions.checkNotNull(playerId, "playerId cannot be null");
-        return this.offlinePlayers.get(playerId);
+        synchronized (this.offlinePlayers) {
+            return this.offlinePlayers.get(playerId);
+        }
     }
 
     @Nullable
     public UUID getUUID(@NotNull String playerName) {
         Preconditions.checkNotNull(playerName, "playerName cannot be null");
-        return this.offlinePlayers.inverse().get(playerName);
+        synchronized (this.offlinePlayers) {
+            UUID exact = this.offlinePlayers.inverse().get(playerName);
+            if (exact != null) {
+                return exact;
+            }
+            for (java.util.Map.Entry<UUID, String> entry : this.offlinePlayers.entrySet()) {
+                if (entry.getValue().equalsIgnoreCase(playerName)) {
+                    return entry.getKey();
+                }
+            }
+            return null;
+        }
     }
 
     @NotNull
     public CompletableFuture<Suggestions> suggestPlayerNames(@NotNull SuggestionsBuilder builder) {
         Preconditions.checkNotNull(builder, "builder cannot be null");
         String remaining = builder.getRemainingLowerCase();
-        for (String playerName : this.offlinePlayers.values()) {
-            if (playerName.startsWith(remaining)) {
-                builder.suggest(playerName);
+        synchronized (this.offlinePlayers) {
+            for (String playerName : this.offlinePlayers.values()) {
+                if (playerName.toLowerCase(java.util.Locale.ROOT).startsWith(remaining)) {
+                    builder.suggest(playerName);
+                }
             }
         }
         return builder.buildFuture();
     }
 
-    public void register() {
-        if (!this.registered) {
-            Bukkit.getPluginManager().registerEvents(this, this.plugin);
-            this.registered = true;
-        }
+    public synchronized void register() {
+        if (this.registered) return;
+        Bukkit.getPluginManager().registerEvents(this, this.plugin);
+        this.registered = true;
+    }
+
+    public synchronized void unregister() {
+        if (!this.registered) return;
+        HandlerList.unregisterAll(this);
+        this.registered = false;
     }
 
     public boolean isRegistered() {
@@ -172,7 +193,11 @@ public final class OfflinePlayerCache implements Listener {
         if (!player.hasPlayedBefore()) {
             this.addToCache(player.getUniqueId(), player.getName());
         } else {
-            if (!Objects.equals(this.offlinePlayers.get(player.getUniqueId()), player.getName())) {
+            String cachedName;
+            synchronized (this.offlinePlayers) {
+                cachedName = this.offlinePlayers.get(player.getUniqueId());
+            }
+            if (!Objects.equals(cachedName, player.getName())) {
                 this.addToCache(player.getUniqueId(), player.getName());
             }
         }
@@ -182,8 +207,11 @@ public final class OfflinePlayerCache implements Listener {
         Preconditions.checkNotNull(playerId, "playerId cannot be null");
         Preconditions.checkNotNull(playerName, "playerName cannot be null");
 
-        UUID previousOwner = this.offlinePlayers.inverse().get(playerName);
-        this.offlinePlayers.forcePut(playerId, playerName);
+        UUID previousOwner;
+        synchronized (this.offlinePlayers) {
+            previousOwner = this.offlinePlayers.inverse().get(playerName);
+            this.offlinePlayers.forcePut(playerId, playerName);
+        }
         this.playerCache.invalidate(playerId);
 
         if (previousOwner != null && !previousOwner.equals(playerId)) {
@@ -198,7 +226,9 @@ public final class OfflinePlayerCache implements Listener {
     public void clear() {
         this.playerCache.invalidateAll();
         this.playerCache.cleanUp();
-        this.offlinePlayers.clear();
+        synchronized (this.offlinePlayers) {
+            this.offlinePlayers.clear();
+        }
     }
 
     /**
@@ -212,7 +242,9 @@ public final class OfflinePlayerCache implements Listener {
         Bukkit.getAsyncScheduler().runNow(this.plugin, task -> {
             for (OfflinePlayer offlinePlayer : this.plugin.getServer().getOfflinePlayers()) {
                 if (offlinePlayer.getName() != null) {
-                    this.offlinePlayers.forcePut(offlinePlayer.getUniqueId(), offlinePlayer.getName());
+                    synchronized (this.offlinePlayers) {
+                        this.offlinePlayers.forcePut(offlinePlayer.getUniqueId(), offlinePlayer.getName());
+                    }
                 }
             }
         });
@@ -246,7 +278,9 @@ public final class OfflinePlayerCache implements Listener {
                 if (response.statusCode() == 200) {
                     String currentName = this.extractNameFromProfile(response.body());
                     if (currentName != null) {
-                        this.offlinePlayers.forcePut(staleId, currentName);
+                        synchronized (this.offlinePlayers) {
+                            this.offlinePlayers.forcePut(staleId, currentName);
+                        }
                     }
                 } else if (response.statusCode() == 204 || response.statusCode() == 404) {
                     this.plugin.getLogger().fine("No Mojang profile found for " + staleId + " (status " + response.statusCode() + ")");
@@ -299,13 +333,32 @@ public final class OfflinePlayerCache implements Listener {
      */
     public static void install(@NotNull Plugin plugin) {
         Preconditions.checkNotNull(plugin, "Plugin cannot be null");
-        if (globalInstance.get() != null) {
+        OfflinePlayerCache cache = builder(plugin).build();
+        if (!globalInstance.compareAndSet(null, cache)) {
             plugin.getLogger().warning("OfflinePlayerCache global instance already set - install() called more than once.");
             return;
         }
-        OfflinePlayerCache cache = builder(plugin).build();
         cache.register();
-        globalInstance.set(cache);
+    }
+
+    /**
+     * Uninstalls the global cache instance if it belongs to the given plugin,
+     * unregistering event listeners and clearing cached entries.
+     *
+     * @param plugin the owning plugin
+     * @return {@code true} if uninstalled successfully, {@code false} otherwise
+     */
+    public static boolean uninstall(@NotNull Plugin plugin) {
+        Preconditions.checkNotNull(plugin, "Plugin cannot be null");
+        OfflinePlayerCache current = globalInstance.get();
+        if (current != null && current.plugin.equals(plugin)) {
+            if (globalInstance.compareAndSet(current, null)) {
+                current.unregister();
+                current.clear();
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
