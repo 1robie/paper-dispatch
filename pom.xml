@@ -16,22 +16,17 @@
         <module>Exemple-Plugin</module>
     </modules>
 
-    <profiles>
-        <profile>
-            <id>dev-build</id>
-            <properties>
-                <dev.suffix>-Dev</dev.suffix>
-            </properties>
-        </profile>
-    </profiles>
-
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <maven.compiler.encoding>UTF-8</maven.compiler.encoding>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
+        <!-- `release` supersedes source/target; keeping all three would just be three places
+             to forget to update. -->
         <maven.compiler.release>21</maven.compiler.release>
+
+        <junit.version>5.11.4</junit.version>
+        <mockito.version>5.18.0</mockito.version>
+        <mockbukkit.version>4.113.1</mockbukkit.version>
     </properties>
 
     <dependencyManagement>
@@ -61,35 +56,36 @@
             <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter-api</artifactId>
-                <version>5.10.2</version>
+                <version>${junit.version}</version>
                 <scope>test</scope>
             </dependency>
 
             <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter-engine</artifactId>
-                <version>5.10.2</version>
+                <version>${junit.version}</version>
                 <scope>test</scope>
             </dependency>
 
             <dependency>
                 <groupId>org.mockito</groupId>
                 <artifactId>mockito-core</artifactId>
-                <version>5.11.0</version>
+                <version>${mockito.version}</version>
                 <scope>test</scope>
             </dependency>
 
             <dependency>
                 <groupId>org.mockbukkit.mockbukkit</groupId>
                 <artifactId>mockbukkit-v26.1.2</artifactId>
-                <version>4.113.1</version>
+                <version>${mockbukkit.version}</version>
                 <scope>test</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>
 
     <build>
-        <defaultGoal>clean package</defaultGoal>
+        <!-- `verify` rather than `package` so a bare `mvn` runs the full check, matching CI. -->
+        <defaultGoal>clean verify</defaultGoal>
 
         <pluginManagement>
             <plugins>
@@ -98,8 +94,8 @@
                     <artifactId>maven-compiler-plugin</artifactId>
                     <version>3.9.0</version>
                     <configuration>
-                        <source>${maven.compiler.source}</source>
-                        <target>${maven.compiler.target}</target>
+                        <!-- `release` alone is correct and safer than source+target: it also
+                             checks that only APIs present in that JDK are used. -->
                         <release>${maven.compiler.release}</release>
                         <encoding>${project.build.sourceEncoding}</encoding>
                     </configuration>
@@ -124,12 +120,76 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>3.5.6</version>
+                    <configuration>
+                        <!-- MockBukkit reflects into JDK internals, hence the add-opens flags.
+                             Mockito is attached explicitly as an agent: self-attachment is
+                             deprecated and will stop working on a future JDK.
+                             Note: net.bytebuddy.experimental is deliberately NOT set here. That
+                             flag forces byte-buddy onto JDKs it does not officially support,
+                             masking an out-of-date Mockito rather than fixing it. Bump
+                             mockito.version instead. -->
+                        <argLine>
+                            -javaagent:${org.mockito:mockito-core:jar}
+                            --add-opens java.base/java.lang=ALL-UNNAMED
+                            --add-opens java.base/java.util=ALL-UNNAMED
+                        </argLine>
+                    </configuration>
                 </plugin>
 
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-install-plugin</artifactId>
                     <version>3.1.4</version>
+                </plugin>
+
+                <!-- Exposes resolved dependency paths as properties, so surefire's argLine can
+                     reference ${org.mockito:mockito-core:jar} to attach the Mockito agent. -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <version>3.8.1</version>
+                    <executions>
+                        <execution>
+                            <id>resolve-dependency-properties</id>
+                            <goals>
+                                <goal>properties</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-source-plugin</artifactId>
+                    <version>3.3.1</version>
+                    <executions>
+                        <execution>
+                            <id>attach-sources</id>
+                            <goals>
+                                <goal>jar-no-fork</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-javadoc-plugin</artifactId>
+                    <version>3.11.2</version>
+                    <configuration>
+                        <!-- Paper's API carries annotations javadoc cannot always resolve; missing
+                             tags should not fail a build. Real javadoc errors still do. -->
+                        <doclint>none</doclint>
+                        <quiet>true</quiet>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <id>attach-javadocs</id>
+                            <goals>
+                                <goal>jar</goal>
+                            </goals>
+                        </execution>
+                    </executions>
                 </plugin>
 
                 <plugin>
@@ -141,9 +201,24 @@
         </pluginManagement>
 
         <resources>
+            <!-- Filter ONLY the plugin descriptors that need ${project.version} substituted.
+                 Blanket filtering of src/main/resources silently corrupts any binary resource
+                 (images, .dat files, keystores) the moment one is added. -->
             <resource>
                 <directory>src/main/resources</directory>
                 <filtering>true</filtering>
+                <includes>
+                    <include>paper-plugin.yml</include>
+                    <include>plugin.yml</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>paper-plugin.yml</exclude>
+                    <exclude>plugin.yml</exclude>
+                </excludes>
             </resource>
         </resources>
     </build>

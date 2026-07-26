@@ -11,7 +11,9 @@ import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import io.papermc.paper.command.brigadier.MessageComponentSerializer;
 import io.papermc.paper.command.brigadier.argument.CustomArgumentType;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.jspecify.annotations.NonNull;
 
 import java.util.Locale;
@@ -38,12 +40,19 @@ public class EnumArgument<E extends Enum<E>> implements CustomArgumentType.Conve
      *
      * @param enumClass the enum class
      */
-    public EnumArgument(Class<E> enumClass) {
-        this(Preconditions.checkNotNull(enumClass, "Enum class cannot be null"), input -> MiniMessage.miniMessage().deserialize("<red>Invalid value: " + input + "."));
+    public EnumArgument(@NonNull Class<E> enumClass) {
+        this(enumClass, input -> Component.text("Invalid value: ")
+                .color(NamedTextColor.RED)
+                .append(Component.text(String.valueOf(input)))
+                .append(Component.text(".")));
     }
 
     /**
      * Creates an enum argument with a custom error message.
+     *
+     * <p><b>Note:</b> if {@code errorMessageFunction} builds its component by feeding the
+     * input through {@link MiniMessage}, remember that the input is player-controlled —
+     * pass it as a placeholder rather than concatenating it into the source string.
      *
      * @param enumClass            the enum class
      * @param errorMessageFunction function that produces an error {@link Component}
@@ -54,10 +63,11 @@ public class EnumArgument<E extends Enum<E>> implements CustomArgumentType.Conve
         Preconditions.checkNotNull(errorMessageFunction, "Error message function cannot be null");
         this.enumClass = enumClass;
         this.invalidEnumException = new DynamicCommandExceptionType(input -> {
+            Component message = errorMessageFunction.apply(input);
             try {
-                return MessageComponentSerializer.message().serialize(errorMessageFunction.apply(input));
+                return MessageComponentSerializer.message().serialize(message);
             } catch (Exception | LinkageError e) {
-                String text = errorMessageFunction.apply(input).toString();
+                String text = PlainTextComponentSerializer.plainText().serialize(message);
                 return (com.mojang.brigadier.Message) () -> text;
             }
         });

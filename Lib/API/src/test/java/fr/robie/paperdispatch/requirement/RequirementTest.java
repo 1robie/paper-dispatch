@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockbukkit.mockbukkit.MockBukkit;
+import org.mockbukkit.mockbukkit.plugin.PluginMock;
 import org.mockito.Mockito;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -16,12 +17,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
 
 class RequirementTest {
+
     private Plugin plugin;
 
     @BeforeEach
     void setUp() {
         MockBukkit.mock();
-        this.plugin = MockBukkit.createMockPlugin();
+        this.plugin = PluginMock.builder().withPluginName("TestPlugin").build();
     }
 
     @AfterEach

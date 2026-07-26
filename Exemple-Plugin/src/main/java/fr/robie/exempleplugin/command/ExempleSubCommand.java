@@ -29,7 +29,11 @@ public class ExempleSubCommand extends SubCommand<ExemplePlugin> {
 
     @Override
     protected @NotNull CommandResultType perform(@NotNull CommandDispatch<ExemplePlugin> dispatch) {
-        Player player = dispatch.getPlayer();
+        Player player = dispatch.getSenderAsPlayer();
+        if (player == null) {
+            dispatch.getSender().sendMessage("This command can only be run by a player.");
+            return CommandResultType.FAILURE;
+        }
 
         String arg1 = dispatch.getArgument("arg1", String.class);
         player.sendMessage("You entered the required argument: " + arg1);
@@ -43,7 +47,7 @@ public class ExempleSubCommand extends SubCommand<ExemplePlugin> {
         }
 
         if (!dispatch.hasFlag("silent")) {
-            int count = dispatch.getFlagValue("count", Integer.class);
+            int count = dispatch.getFlagValue("count", Integer.class, 1);
             String message = dispatch.getFlagValue("message", String.class, "default message");
             player.sendMessage("Count: " + count + ", Message: " + message);
         }

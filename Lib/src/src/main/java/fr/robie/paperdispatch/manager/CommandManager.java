@@ -3,9 +3,11 @@ package fr.robie.paperdispatch.manager;
 import com.mojang.brigadier.tree.CommandNode;
 import com.mojang.brigadier.tree.RootCommandNode;
 import fr.robie.paperdispatch.command.BaseCommand;
+import fr.robie.paperdispatch.logger.PluginLogger;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
+import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -14,6 +16,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -21,26 +24,36 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
 
     private final T plugin;
 
-    // Thread-safe: registration can be triggered from async plugin-load contexts.
-    // CopyOnWriteArrayList so that concurrent iteration (e.g. during registerCommandsDynamically)
-    // never races against a concurrent registerCommand/unregisterCommand call.
+    private final PluginLogger logger;
+
     private final Map<Plugin, List<BaseCommand<?>>> commands = new ConcurrentHashMap<>();
     private final Set<BaseCommand<?>> registeredCommands = ConcurrentHashMap.newKeySet();
 
-    // Guards against attaching the same LifecycleEvents.COMMANDS handler more than once if
-    // registerCommands()/unregisterCommands() are ever called multiple times (e.g. on reload).
-    private final AtomicBoolean registerLifecycleHandlerAttached = new AtomicBoolean(false);
-    private final AtomicBoolean unregisterLifecycleHandlerAttached = new AtomicBoolean(false);
+    private final AtomicBoolean lifecycleHandlerAttached = new AtomicBoolean(false);
+
+    private final Queue<CommandRemoval> pendingRemovals = new ConcurrentLinkedQueue<>();
+
+    private volatile boolean dynamicRegistrationFlushed = false;
+
+    private final AtomicBoolean missingLifecycleFieldWarned = new AtomicBoolean(false);
+
+    /**
+     * A command's identity in the Brigadier tree, snapshotted so a queued removal survives
+     * the command being dropped from {@link #commands}.
+     */
+    private record CommandRemoval(String namespace, String name, Collection<String> aliases) {}
 
     public CommandManager(@NotNull T plugin) {
+        this(plugin, PluginLogger.of(plugin.getLogger()));
+    }
+
+    public CommandManager(@NotNull T plugin, @NotNull PluginLogger logger) {
         this.plugin = plugin;
+        this.logger = logger;
     }
 
     @Override
-    public <Y extends Plugin> void registerCommand(@NotNull BaseCommand<Y> command) {
-        // Find if a command with the same name is already registered by this plugin, and if so, override/replace it.
-        // We defer the server-side sync until the very end so a replace only triggers ONE sync instead of two,
-        // and we only touch the Brigadier tree if the old command actually made it there.
+    public <Y extends Plugin> void trackCommand(@NotNull BaseCommand<Y> command) {
         BaseCommand<?> existing = this.findRegisteredCommand(command.getPlugin(), command.getName());
         boolean needsSync = false;
 
@@ -48,7 +61,6 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
             needsSync |= this.unregisterCommand(existing, false);
         }
 
-        // Check if any of the new command's aliases are already registered by this plugin
         for (String alias : command.getAliases()) {
             BaseCommand<?> existingAlias = this.findRegisteredCommand(command.getPlugin(), alias);
             if (existingAlias != null && existingAlias != existing) {
@@ -57,6 +69,11 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
         }
 
         this.commands.computeIfAbsent(command.getPlugin(), k -> new CopyOnWriteArrayList<>()).add(command);
+
+        if (this.dynamicRegistrationFlushed) {
+            this.registerCommandsDynamically(List.of(command));
+            return;
+        }
 
         if (needsSync) {
             this.syncCommands();
@@ -72,6 +89,7 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
      * Unregisters several commands as a single batch, syncing the command tree at most once
      * regardless of how many commands actually needed removal from the server-side tree.
      */
+    @Override
     public void unregisterCommands(@NotNull Collection<? extends BaseCommand<?>> toRemove) {
         boolean needsSync = false;
         for (BaseCommand<?> command : toRemove) {
@@ -86,13 +104,36 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
      * Unregisters every command currently tracked for the given plugin, syncing once at the end.
      * Intended for use in {@code onDisable()}.
      */
+    @Override
     public void unregisterAll(@NotNull Plugin plugin) {
         List<BaseCommand<?>> pluginCommands = this.commands.get(plugin);
         if (pluginCommands == null || pluginCommands.isEmpty()) {
             return;
         }
-        // Snapshot first: unregisterCommand mutates pluginCommands as it goes.
         this.unregisterCommands(new ArrayList<>(pluginCommands));
+    }
+
+    /**
+     * Unregisters every tracked command across all owning plugins, syncing once at the end.
+     */
+    @Override
+    public void unregisterAll() {
+        List<BaseCommand<?>> toRemove = this.allTrackedCommands();
+
+        Set<String> foreignOwners = new TreeSet<>();
+        for (BaseCommand<?> command : toRemove) {
+            if (!command.getPlugin().equals(this.plugin)) {
+                foreignOwners.add(command.getPlugin().getName());
+            }
+        }
+        if (!foreignOwners.isEmpty()) {
+            this.logger.info(
+                    "unregisterAll() is also removing commands owned by " + String.join(", ", foreignOwners)
+                            + ". Use unregisterAll(Plugin) if you only meant this plugin's own commands."
+            );
+        }
+
+        this.unregisterCommands(toRemove);
     }
 
     /**
@@ -134,16 +175,17 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
     /**
      * Returns an unmodifiable snapshot of the commands currently tracked for the given plugin.
      */
+    @Override
     @NotNull
     public List<BaseCommand<?>> getCommands(@NotNull Plugin plugin) {
         List<BaseCommand<?>> pluginCommands = this.commands.get(plugin);
-        // CopyOnWriteArrayList's own copy constructor is safe against concurrent mutation.
         return pluginCommands == null ? List.of() : Collections.unmodifiableList(new ArrayList<>(pluginCommands));
     }
 
     /**
      * Looks up a tracked command by name or alias for the given plugin, or null if none matches.
      */
+    @Override
     @Nullable
     public BaseCommand<?> getCommand(@NotNull Plugin plugin, @NotNull String name) {
         return this.findRegisteredCommand(plugin, name);
@@ -166,11 +208,6 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
         return null;
     }
 
-    // ---------------------------------------------------------------------
-    // Cached reflection handles into Paper's internal PaperCommands class.
-    // Resolved once and reused, instead of re-resolving Class/Field/Method
-    // objects on every single register/unregister call.
-    // ---------------------------------------------------------------------
 
     /**
          * Holds the reflective handles we need into {@code io.papermc.paper.command.brigadier.PaperCommands}.
@@ -215,6 +252,34 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
         }
     }
 
+    /**
+     * Cached {@code removeCommand(String)} lookups, keyed by the concrete node class.
+     * <p>
+     * {@code removeCommand} is invoked 2-4 times per command per unregister, so resolving the
+     * method (and calling {@code setAccessible}) on every call was pure overhead. Values are
+     * wrapped in {@link Optional} so a negative result is cached too.
+     */
+    private static final Map<Class<?>, Optional<Method>> removeCommandMethods = new ConcurrentHashMap<>();
+
+    @Nullable
+    private static Method resolveRemoveCommandMethod(Class<?> nodeClass) {
+        return removeCommandMethods.computeIfAbsent(nodeClass, cls -> {
+            Class<?> current = cls;
+            while (current != null && current != Object.class) {
+                try {
+                    Method method = current.getDeclaredMethod("removeCommand", String.class);
+                    method.setAccessible(true);
+                    return Optional.of(method);
+                } catch (NoSuchMethodException e) {
+                    current = current.getSuperclass();
+                } catch (RuntimeException e) {
+                    return Optional.empty();
+                }
+            }
+            return Optional.empty();
+        }).orElse(null);
+    }
+
     @SuppressWarnings("unchecked")
     private static RootCommandNode<CommandSourceStack> getDispatcherRoot(PaperCommandsHandles handles)
             throws ReflectiveOperationException {
@@ -224,7 +289,6 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
         return dispatcher.getRoot();
     }
 
-    // ---------------------------------------------------------------------
 
     /**
      * Checks if the Paper lifecycle registration phase is still open.
@@ -245,60 +309,163 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
                 field.setAccessible(true);
                 return field.getBoolean(this.plugin);
             }
+            if (this.missingLifecycleFieldWarned.compareAndSet(false, true)) {
+                this.logger.warning(
+                        "Could not find the 'allowsLifecycleRegistration' field on " + this.plugin.getClass().getName()
+                                + " or its superclasses; assuming dynamic registration. If commands fail to register, "
+                                + "this likely indicates a Paper API change."
+                );
+            }
         } catch (ReflectiveOperationException e) {
-            this.plugin.getLogger().warning("Failed to determine lifecycle registration state, assuming dynamic registration: " + e);
+            this.logger.warning("Failed to determine lifecycle registration state, assuming dynamic registration: " + e);
         }
         return false;
     }
 
     @Override
-    public void registerCommands() {
+    public void flushRegistrations() {
         if (this.isLifecycleRegistrationAllowed()) {
             int totalCommands = this.commands.values().stream().mapToInt(List::size).sum();
-            this.plugin.getLogger().info("Registering " + totalCommands + " commands via lifecycle events...");
-
-            if (this.registerLifecycleHandlerAttached.compareAndSet(false, true)) {
-                this.plugin.getLifecycleManager().registerEventHandler(
-                        LifecycleEvents.COMMANDS,
-                        event -> {
-                            Commands registrar = event.registrar();
-                            for (List<BaseCommand<?>> pluginCommands : this.commands.values()) {
-                                for (BaseCommand<?> command : pluginCommands) {
-                                    if (this.registeredCommands.contains(command)) {
-                                        continue;
-                                    }
-                                    try {
-                                        registrar.register(
-                                                command.build(),
-                                                command.getDescription(),
-                                                command.getAliases()
-                                        );
-                                        this.registeredCommands.add(command);
-                                    } catch (Exception e) {
-                                        this.plugin.getLogger().warning(
-                                                "Failed to register command '" + command.getName() + "': " + e
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                );
-            }
+            this.logger.info("Registering " + totalCommands + " commands via lifecycle events...");
+            this.attachLifecycleHandler();
         } else {
-            // Dynamic registration at runtime
-            this.registerCommandsDynamically();
+            this.registerCommandsDynamically(this.allTrackedCommands());
+            this.dynamicRegistrationFlushed = true;
         }
     }
 
-    private void registerCommandsDynamically() {
-        int totalCommands = this.commands.values().stream().mapToInt(List::size).sum();
-        this.plugin.getLogger().info("Registering " + totalCommands + " commands dynamically...");
+    /**
+     * Attaches the single {@code LifecycleEvents.COMMANDS} handler, if not already attached.
+     * <p>
+     * The handler drains {@link #pendingRemovals} before registering, so that within one event
+     * a queued removal is applied first and a command re-registered afterwards still wins.
+     */
+    private void attachLifecycleHandler() {
+        if (!this.lifecycleHandlerAttached.compareAndSet(false, true)) {
+            return;
+        }
+        this.plugin.getLifecycleManager().registerEventHandler(
+                LifecycleEvents.COMMANDS,
+                event -> this.handleCommandsEvent(event.registrar())
+        );
+    }
+
+    /**
+     * Body of the {@code COMMANDS} lifecycle handler: applies any queued removals, then
+     * registers every tracked command into the supplied registrar.
+     * <p>
+     * Package-private rather than inlined into the lambda so it can be driven directly in tests —
+     * firing a real lifecycle event needs a running server.
+     *
+     * @param registrar the registrar for this event
+     */
+    void handleCommandsEvent(@NotNull Commands registrar) {
+        RootCommandNode<CommandSourceStack> root = registrar.getDispatcher().getRoot();
+        CommandRemoval removal;
+        while ((removal = this.pendingRemovals.poll()) != null) {
+            this.removeCommandAndAliases(root, removal);
+        }
+
+        this.registeredCommands.clear();
+
+        for (List<BaseCommand<?>> pluginCommands : this.commands.values()) {
+            for (BaseCommand<?> command : pluginCommands) {
+                if (this.registeredCommands.contains(command)) {
+                    continue;
+                }
+                try {
+                    Set<String> registeredLabels = registrar.register(
+                            command.getPlugin().getPluginMeta(),
+                            command.build(),
+                            command.getDescription(),
+                            command.getAliases()
+                    );
+                    this.registeredCommands.add(command);
+                    this.warnAboutRejectedAliases(command, registeredLabels);
+                } catch (Exception e) {
+                    this.logger.warning(
+                            "Failed to register command '" + command.getName() + "': " + e
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * Narrows the reflective {@code register} return value to a set of labels, or {@code null}
+     * if this Paper build returned something else (the signature is not part of the public API
+     * on the dynamic path, so it is treated as best-effort).
+     */
+    @Nullable
+    @SuppressWarnings("unchecked")
+    private static Set<String> asLabelSet(@Nullable Object result) {
+        if (!(result instanceof Set<?> set)) {
+            return null;
+        }
+        for (Object element : set) {
+            if (!(element instanceof String)) {
+                return null;
+            }
+        }
+        return (Set<String>) set;
+    }
+
+    /**
+     * Reports any alias the server declined to register.
+     * <p>
+     * Paper's contract is that <i>aliases will not override already existing commands</i>, so an
+     * alias claimed by another plugin is dropped silently — {@code register} returns only the
+     * labels it actually took. Without this check the manager would report the command as fully
+     * registered while some of its aliases quietly do nothing.
+     *
+     * @param command          the command that was registered
+     * @param registeredLabels the labels the registrar reports it accepted, or {@code null} if
+     *                         the registration path could not supply them
+     */
+    private void warnAboutRejectedAliases(@NotNull BaseCommand<?> command, @Nullable Set<String> registeredLabels) {
+        if (registeredLabels == null) {
+            return;
+        }
+
+        List<String> rejected = new ArrayList<>();
+        for (String alias : command.getAliases()) {
+            if (!registeredLabels.contains(alias)) {
+                rejected.add(alias);
+            }
+        }
+
+        if (!rejected.isEmpty()) {
+            this.logger.warning(
+                    "Command '" + command.getName() + "' registered, but the server declined these aliases: "
+                            + String.join(", ", rejected)
+                            + " (most likely already claimed by another command; the namespaced form still works)"
+            );
+        }
+    }
+
+    /**
+     * @return a snapshot of every command tracked across all plugins.
+     */
+    @NotNull
+    private List<BaseCommand<?>> allTrackedCommands() {
+        List<BaseCommand<?>> all = new ArrayList<>();
+        for (List<BaseCommand<?>> pluginCommands : this.commands.values()) {
+            all.addAll(pluginCommands);
+        }
+        return all;
+    }
+
+    private void registerCommandsDynamically(@NotNull Collection<? extends BaseCommand<?>> toRegister) {
+        if (toRegister.isEmpty()) {
+            return;
+        }
+        this.logger.info("Registering " + toRegister.size() + " commands dynamically...");
 
         final PaperCommandsHandles handles;
         try {
             handles = resolvePaperCommandsHandles();
         } catch (ReflectiveOperationException e) {
-            this.plugin.getLogger().warning("Failed to resolve PaperCommands internals for dynamic registration: " + e);
+            this.logger.warning("Failed to resolve PaperCommands internals for dynamic registration: " + e);
             return;
         }
 
@@ -306,84 +473,99 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
         try {
             wasInvalid = handles.invalidField.getBoolean(handles.instance);
         } catch (ReflectiveOperationException e) {
-            this.plugin.getLogger().warning("Failed to read PaperCommands 'invalid' state: " + e);
+            this.logger.warning("Failed to read PaperCommands 'invalid' state: " + e);
             return;
         }
 
-        // Everything that touches the temporarily-flipped 'invalid' flag must live inside this
-        // try/finally so the flag is guaranteed to be restored even if something fails mid-way.
         try {
             handles.invalidField.setBoolean(handles.instance, false);
         } catch (ReflectiveOperationException e) {
-            this.plugin.getLogger().warning("Failed to flip PaperCommands 'invalid' state: " + e);
+            this.logger.warning("Failed to flip PaperCommands 'invalid' state: " + e);
             return;
         }
 
         try {
-            for (Map.Entry<Plugin, List<BaseCommand<?>>> entry : this.commands.entrySet()) {
-                Plugin cmdPlugin = entry.getKey();
-                for (BaseCommand<?> command : entry.getValue()) {
-                    if (this.registeredCommands.contains(command)) {
-                        continue;
-                    }
-                    try {
-                        handles.registerMethod.invoke(
-                                handles.instance,
-                                cmdPlugin.getPluginMeta(),
-                                command.build(),
-                                command.getDescription(),
-                                command.getAliases()
-                        );
-                        this.registeredCommands.add(command);
-                    } catch (Exception e) {
-                        this.plugin.getLogger().warning(
-                                "Failed to dynamically register command '" + command.getName() + "': " + e
-                        );
-                    }
+            for (BaseCommand<?> command : toRegister) {
+                if (this.registeredCommands.contains(command)) {
+                    continue;
+                }
+                try {
+                    Object result = handles.registerMethod.invoke(
+                            handles.instance,
+                            command.getPlugin().getPluginMeta(),
+                            command.build(),
+                            command.getDescription(),
+                            command.getAliases()
+                    );
+                    this.registeredCommands.add(command);
+                    this.warnAboutRejectedAliases(command, asLabelSet(result));
+                } catch (Exception e) {
+                    this.logger.warning(
+                            "Failed to dynamically register command '" + command.getName() + "': " + e
+                    );
                 }
             }
-            this.plugin.getLogger().info("Commands registered dynamically!");
+            this.logger.info("Commands registered dynamically!");
         } finally {
-            // Restore the original invalid state no matter what happened above.
             try {
                 handles.invalidField.setBoolean(handles.instance, wasInvalid);
             } catch (ReflectiveOperationException e) {
-                this.plugin.getLogger().warning("Failed to restore PaperCommands 'invalid' state: " + e);
+                this.logger.warning("Failed to restore PaperCommands 'invalid' state: " + e);
             }
         }
 
-        // Sync commands to all players so client autocomplete updates
         this.syncCommands();
     }
 
     @Override
-    public void unregisterCommands() {
+    public void unregisterReloadableCommands() {
         if (this.isLifecycleRegistrationAllowed()) {
-            this.plugin.getLogger().info("Unregistering commands via lifecycle events...");
+            this.logger.info("Queueing reloadable commands for removal on the next COMMANDS event...");
 
-            if (this.unregisterLifecycleHandlerAttached.compareAndSet(false, true)) {
-                this.plugin.getLifecycleManager().registerEventHandler(
-                        LifecycleEvents.COMMANDS,
-                        event -> {
-                            RootCommandNode<CommandSourceStack> root = event.registrar().getDispatcher().getRoot();
-                            this.forEachReloadableCommand(command -> {
-                                this.removeCommand(root, command.getName());
-                                for (String alias : command.getAliases()) {
-                                    this.removeCommand(root, alias);
-                                }
-                            });
-                        }
-                );
+            int queued = 0;
+            for (BaseCommand<?> command : this.allTrackedCommands()) {
+                if (command.isReloadable()) {
+                    this.pendingRemovals.add(this.toRemoval(command));
+                    queued++;
+                }
             }
+
+            this.attachLifecycleHandler();
             this.purgeReloadableCommands();
+
+            this.logger.info("Queued " + queued + " reloadable commands for removal.");
         } else {
-            // Dynamic unregistration at runtime
             this.unregisterCommandsDynamically();
         }
     }
 
+    /**
+     * Snapshots a command's tree identity for later removal.
+     */
+    @NotNull
+    private CommandRemoval toRemoval(@NotNull BaseCommand<?> command) {
+        return new CommandRemoval(
+                command.getPlugin().getPluginMeta().namespace(),
+                command.getName(),
+                List.copyOf(command.getAliases())
+        );
+    }
+
+    /**
+     * Removes a command, its aliases, and their namespaced variants from the given tree root.
+     */
+    private void removeCommandAndAliases(@NotNull CommandNode<CommandSourceStack> root, @NotNull CommandRemoval removal) {
+        this.removeCommand(root, removal.name());
+        this.removeCommand(root, removal.namespace() + ":" + removal.name());
+
+        for (String alias : removal.aliases()) {
+            this.removeCommand(root, alias);
+            this.removeCommand(root, removal.namespace() + ":" + alias);
+        }
+    }
+
     private void unregisterCommandsDynamically() {
-        this.plugin.getLogger().info("Unregistering commands dynamically...");
+        this.logger.info("Unregistering commands dynamically...");
 
         final PaperCommandsHandles handles;
         final RootCommandNode<CommandSourceStack> root;
@@ -391,36 +573,21 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
             handles = resolvePaperCommandsHandles();
             root = getDispatcherRoot(handles);
         } catch (ReflectiveOperationException e) {
-            this.plugin.getLogger().warning("Failed to resolve PaperCommands internals for dynamic unregistration: " + e);
+            this.logger.warning("Failed to resolve PaperCommands internals for dynamic unregistration: " + e);
+            this.purgeReloadableCommands();
             return;
         }
 
-        for (Map.Entry<Plugin, List<BaseCommand<?>>> entry : this.commands.entrySet()) {
-            Plugin cmdPlugin = entry.getKey();
-            String namespace = cmdPlugin.getPluginMeta().namespace();
-            for (BaseCommand<?> command : entry.getValue()) {
-                if (!command.isReloadable()) {
-                    continue;
-                }
-                String name = command.getName();
-
-                // Remove base command and namespaced variant (e.g. /myplugin:mycommand)
-                this.removeCommand(root, name);
-                this.removeCommand(root, namespace + ":" + name);
-
-                // Remove aliases and namespaced variants
-                for (String alias : command.getAliases()) {
-                    this.removeCommand(root, alias);
-                    this.removeCommand(root, namespace + ":" + alias);
-                }
+        for (BaseCommand<?> command : this.allTrackedCommands()) {
+            if (command.isReloadable()) {
+                this.removeCommandAndAliases(root, this.toRemoval(command));
             }
         }
 
         this.purgeReloadableCommands();
 
-        this.plugin.getLogger().info("Commands unregistered dynamically!");
+        this.logger.info("Commands unregistered dynamically!");
 
-        // Sync commands to all players so client autocomplete updates
         this.syncCommands();
     }
 
@@ -434,22 +601,14 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
             handles = resolvePaperCommandsHandles();
             root = getDispatcherRoot(handles);
         } catch (ReflectiveOperationException e) {
-            this.plugin.getLogger().warning(
+            this.logger.warning(
                     "Failed to unregister command '" + command.getName() + "' from the server tree "
                             + "(this may indicate a Paper API change): " + e
             );
             return false;
         }
 
-        String namespace = command.getPlugin().getPluginMeta().namespace();
-        String name = command.getName();
-        this.removeCommand(root, name);
-        this.removeCommand(root, namespace + ":" + name);
-
-        for (String alias : command.getAliases()) {
-            this.removeCommand(root, alias);
-            this.removeCommand(root, namespace + ":" + alias);
-        }
+        this.removeCommandAndAliases(root, this.toRemoval(command));
 
         if (syncAfter) {
             this.syncCommands();
@@ -473,53 +632,23 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
         this.commands.values().removeIf(List::isEmpty);
     }
 
-    private interface ReloadableCommandAction {
-        void accept(BaseCommand<?> command);
-    }
-
-    private void forEachReloadableCommand(ReloadableCommandAction action) {
-        for (List<BaseCommand<?>> pluginCommands : this.commands.values()) {
-            for (BaseCommand<?> command : pluginCommands) {
-                if (command.isReloadable()) {
-                    action.accept(command);
-                }
-            }
-        }
-    }
-
     /**
      * Compile-safe helper that removes a command from the tree at runtime.
      */
     private void removeCommand(CommandNode<CommandSourceStack> node, String name) {
-        Method removeCommandMethod = null;
-        try {
-            Class<?> current = node.getClass();
-            while (current != null && current != Object.class) {
-                try {
-                    removeCommandMethod = current.getDeclaredMethod("removeCommand", String.class);
-                    break;
-                } catch (NoSuchMethodException e) {
-                    current = current.getSuperclass();
-                }
-            }
-        } catch (Exception e) {
-            this.plugin.getLogger().warning("Failed to look up removeCommand method for '" + name + "': " + e);
-        }
+        Method removeCommandMethod = resolveRemoveCommandMethod(node.getClass());
 
         if (removeCommandMethod != null) {
             try {
-                removeCommandMethod.setAccessible(true);
                 removeCommandMethod.invoke(node, name);
                 return;
             } catch (ReflectiveOperationException e) {
-                this.plugin.getLogger().warning(
+                this.logger.warning(
                         "removeCommand invocation failed for '" + name + "', falling back to field access: " + e
                 );
-                // fall through to the field-based fallback below
             }
         }
 
-        // Safe fallback: manually modify the children, literals, and arguments maps in CommandNode
         try {
             Class<?> commandNodeClass = Class.forName("com.mojang.brigadier.tree.CommandNode");
 
@@ -544,19 +673,32 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
                 arguments.remove(name);
             }
         } catch (ReflectiveOperationException e) {
-            this.plugin.getLogger().warning("Fallback field-based removal failed for '" + name + "': " + e);
+            this.logger.warning("Fallback field-based removal failed for '" + name + "': " + e);
         }
     }
 
     /**
      * Refreshes the command tree for all online players.
+     * <p>
+     * {@code CraftServer#syncCommands} mutates server-global state and must run on the main
+     * thread, but this class is documented as usable from async plugin-load contexts — so
+     * hop onto the global region scheduler when called off-thread rather than corrupting
+     * the dispatcher from a worker.
      */
     private void syncCommands() {
+        if (!Bukkit.isPrimaryThread()) {
+            Bukkit.getGlobalRegionScheduler().run(this.plugin, task -> this.syncCommandsNow());
+            return;
+        }
+        this.syncCommandsNow();
+    }
+
+    private void syncCommandsNow() {
         try {
-            Method syncCommands = org.bukkit.Bukkit.getServer().getClass().getMethod("syncCommands");
-            syncCommands.invoke(org.bukkit.Bukkit.getServer());
+            Method syncCommands = Bukkit.getServer().getClass().getMethod("syncCommands");
+            syncCommands.invoke(Bukkit.getServer());
         } catch (Exception e) {
-            this.plugin.getLogger().warning("Failed to sync commands dynamically: " + e.getMessage());
+            this.logger.warning("Failed to sync commands dynamically: " + e.getMessage());
         }
     }
 }

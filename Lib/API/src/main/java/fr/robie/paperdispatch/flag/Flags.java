@@ -8,17 +8,23 @@ import com.mojang.brigadier.arguments.LongArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import io.papermc.paper.command.brigadier.argument.ArgumentTypes;
 import io.papermc.paper.command.brigadier.argument.AxisSet;
+import io.papermc.paper.command.brigadier.argument.SignedMessageResolver;
+import io.papermc.paper.command.brigadier.argument.predicate.BlockInWorldPredicate;
 import io.papermc.paper.command.brigadier.argument.predicate.ItemStackPredicate;
 import io.papermc.paper.command.brigadier.argument.range.DoubleRangeProvider;
 import io.papermc.paper.command.brigadier.argument.range.IntegerRangeProvider;
 import io.papermc.paper.command.brigadier.argument.resolvers.AngleResolver;
 import io.papermc.paper.command.brigadier.argument.resolvers.BlockPositionResolver;
+import io.papermc.paper.command.brigadier.argument.resolvers.ColumnBlockPositionResolver;
+import io.papermc.paper.command.brigadier.argument.resolvers.ColumnFinePositionResolver;
 import io.papermc.paper.command.brigadier.argument.resolvers.FinePositionResolver;
 import io.papermc.paper.command.brigadier.argument.resolvers.PlayerProfileListResolver;
 import io.papermc.paper.command.brigadier.argument.resolvers.RotationResolver;
 import io.papermc.paper.command.brigadier.argument.resolvers.selector.EntitySelectorArgumentResolver;
 import io.papermc.paper.command.brigadier.argument.resolvers.selector.PlayerSelectorArgumentResolver;
 import io.papermc.paper.entity.LookAnchor;
+import io.papermc.paper.registry.RegistryKey;
+import io.papermc.paper.registry.TypedKey;
 import java.util.UUID;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.text.Component;
@@ -58,7 +64,9 @@ import org.jetbrains.annotations.NotNull;
  *   <li>{@link #entityFlag}, {@link #entitiesFlag}, {@link #playerFlag},
  *       {@link #playersFlag}, {@link #playerProfilesFlag}</li>
  *   <li>{@link #blockPositionFlag}, {@link #finePositionFlag}, {@link #rotationFlag},
- *       {@link #angleFlag}</li>
+ *       {@link #angleFlag}, {@link #columnBlockPositionFlag}, {@link #columnFinePositionFlag}</li>
+ *   <li>{@link #resourceFlag}, {@link #resourceKeyFlag}, {@link #signedMessageFlag},
+ *       {@link #blockInWorldPredicateFlag}</li>
  *   <li>{@link #componentFlag}, {@link #styleFlag}, {@link #namedColorFlag},
  *       {@link #hexColorFlag}</li>
  *   <li>{@link #heightMapFlag}, {@link #entityAnchorFlag}, {@link #templateMirrorFlag},
@@ -578,6 +586,91 @@ public final class Flags {
     @NotNull
     public static ValueFlag<AxisSet> axesFlag(@NotNull String name) {
         return new ValueFlag<>(name, ArgumentTypes.axes());
+    }
+
+    /**
+     * Creates a column-block-position flag ({@code x z}, no Y component).
+     *
+     * @param name the flag name
+     * @return a new column-block-position flag
+     */
+    @NotNull
+    public static ValueFlag<ColumnBlockPositionResolver> columnBlockPositionFlag(@NotNull String name) {
+        return new ValueFlag<>(name, ArgumentTypes.columnBlockPosition());
+    }
+
+    /**
+     * Creates a column-fine-position flag (decimal {@code x z}, no Y component).
+     *
+     * @param name the flag name
+     * @return a new column-fine-position flag
+     */
+    @NotNull
+    public static ValueFlag<ColumnFinePositionResolver> columnFinePositionFlag(@NotNull String name) {
+        return new ValueFlag<>(name, ArgumentTypes.columnFinePosition());
+    }
+
+    /**
+     * Creates a column-fine-position flag with optional integer centering.
+     *
+     * @param name           the flag name
+     * @param centerIntegers if {@code true}, whole numbers are centered (+0.5)
+     * @return a new column-fine-position flag
+     */
+    @NotNull
+    public static ValueFlag<ColumnFinePositionResolver> columnFinePositionFlag(@NotNull String name, boolean centerIntegers) {
+        return new ValueFlag<>(name, ArgumentTypes.columnFinePosition(centerIntegers));
+    }
+
+    /**
+     * Creates a block-in-world predicate flag (matches placed blocks, including state and NBT).
+     *
+     * @param name the flag name
+     * @return a new block-in-world-predicate flag
+     */
+    @NotNull
+    public static ValueFlag<BlockInWorldPredicate> blockInWorldPredicateFlag(@NotNull String name) {
+        return new ValueFlag<>(name, ArgumentTypes.blockInWorldPredicate());
+    }
+
+    /**
+     * Creates a signed-message flag, preserving the chat signature so the value can be
+     * relayed as genuinely player-signed chat.
+     *
+     * @param name the flag name
+     * @return a new signed-message flag
+     */
+    @NotNull
+    public static ValueFlag<SignedMessageResolver> signedMessageFlag(@NotNull String name) {
+        return new ValueFlag<>(name, ArgumentTypes.signedMessage());
+    }
+
+    /**
+     * Creates a flag resolving to a value from the given registry, e.g.
+     * {@code resourceFlag("biome", RegistryKey.BIOME)}.
+     *
+     * @param name        the flag name
+     * @param registryKey the registry to resolve against
+     * @param <T>         the registry value type
+     * @return a new resource flag
+     */
+    @NotNull
+    public static <T> ValueFlag<T> resourceFlag(@NotNull String name, @NotNull RegistryKey<T> registryKey) {
+        return new ValueFlag<>(name, ArgumentTypes.resource(registryKey));
+    }
+
+    /**
+     * Creates a flag resolving to a {@link TypedKey} in the given registry — the key rather
+     * than the value, so it resolves without the registry entry having to be loaded.
+     *
+     * @param name        the flag name
+     * @param registryKey the registry the key belongs to
+     * @param <T>         the registry value type
+     * @return a new resource-key flag
+     */
+    @NotNull
+    public static <T> ValueFlag<TypedKey<T>> resourceKeyFlag(@NotNull String name, @NotNull RegistryKey<T> registryKey) {
+        return new ValueFlag<>(name, ArgumentTypes.resourceKey(registryKey));
     }
 
     /**

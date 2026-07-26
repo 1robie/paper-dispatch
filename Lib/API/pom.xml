@@ -14,6 +14,23 @@
 
     <build>
         <finalName>Paper-Dispatch-Lib-API</finalName>
+        <plugins>
+            <!-- Resolves ${org.mockito:mockito-core:jar} for surefire's -javaagent. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+            </plugin>
+
+            <!-- This is a published library: consumers get sources and javadoc alongside it. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+            </plugin>
+        </plugins>
     </build>
 
     <dependencies>
