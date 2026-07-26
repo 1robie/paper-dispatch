@@ -112,6 +112,9 @@ buildNumber.properties
 # Common working directory
 run/
 /AGENTS.md
+
+# Local-only design rationale (see DESIGN-NOTES.md)
+/DESIGN-NOTES.md
 .classpath
 .factorypath
 .project

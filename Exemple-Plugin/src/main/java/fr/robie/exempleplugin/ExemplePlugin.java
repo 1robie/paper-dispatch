@@ -16,14 +16,14 @@ public class ExemplePlugin extends JavaPlugin implements Listener {
 
         OfflinePlayerCache.install(this);
 
-        this.commandManager.registerCommand(new ExempleCommand(this));
+        this.commandManager.trackCommand(new ExempleCommand(this));
 
-        this.commandManager.registerCommands();
+        this.commandManager.flushRegistrations();
     }
 
     @Override
     public void onDisable() {
-        this.commandManager.unregisterCommands();
+        this.commandManager.unregisterAll(this);
         OfflinePlayerCache.uninstall(this);
         this.getLogger().info("ExemplePlugin disabled!");
     }

@@ -3,6 +3,7 @@ package fr.robie.paperdispatch.flag;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
@@ -42,6 +43,26 @@ class FlagContextTest {
 
         assertEquals(Optional.of(42), ctx.getOptionalValue("count", Integer.class));
         assertEquals(Optional.empty(), ctx.getOptionalValue("unknown", Integer.class));
+    }
+
+    @Test
+    @DisplayName("A flag mapped to an explicit null default counts as present in every accessor")
+    void testNullValuedFlagIsConsistentlyPresent() {
+        Map<String, Object> values = new HashMap<>();
+        values.put("nullable", null);
+
+        FlagContext ctx = new FlagContext(values, Set.of("nullable"));
+
+        assertTrue(ctx.hasFlag("nullable"));
+        assertNull(ctx.getValue("nullable", String.class),
+                "a null-valued flag is present, so getValue must return null rather than throw");
+        assertEquals(Optional.empty(), ctx.getOptionalValue("nullable", String.class),
+                "Optional cannot hold null; an empty Optional here means 'present but null'");
+        assertNull(ctx.getValue("nullable", String.class, "fallback"),
+                "the flag is present, so the fallback must not be substituted");
+
+        assertThrows(NoSuchElementException.class, () -> ctx.getValue("absent", String.class));
+        assertEquals("fallback", ctx.getValue("absent", String.class, "fallback"));
     }
 
     @Test

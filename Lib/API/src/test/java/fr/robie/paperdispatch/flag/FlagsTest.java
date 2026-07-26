@@ -1,7 +1,15 @@
 package fr.robie.paperdispatch.flag;
 
+import com.mojang.brigadier.suggestion.Suggestion;
+import com.mojang.brigadier.suggestion.Suggestions;
+import com.mojang.brigadier.suggestion.SuggestionsBuilder;
+import net.kyori.adventure.text.Component;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -39,6 +47,52 @@ class FlagsTest {
 
         assertTrue(flag.matches("--count"));
         assertTrue(flag.matches("-c"));
+    }
+
+    @Test
+    @DisplayName("Static suggestions should filter by the typed prefix, case-insensitively")
+    void testStaticSuggestionFiltering() throws Exception {
+        Flag<String> flag = Flags.stringFlag("mode").suggests("fast", "safe", "FALLBACK");
+        assertTrue(flag.hasSuggestions());
+
+        List<String> all = suggestionTexts(flag, "");
+        assertEquals(List.of("FALLBACK", "fast", "safe"), all.stream().sorted().toList());
+
+        assertEquals(List.of("FALLBACK", "fast"), suggestionTexts(flag, "fa").stream().sorted().toList());
+        assertEquals(List.of("safe"), suggestionTexts(flag, "SA"));
+    }
+
+    @Test
+    @DisplayName("Tooltip suggestions should preserve insertion order and attach a tooltip")
+    void testTooltipSuggestions() throws Exception {
+        Map<String, Component> options = new LinkedHashMap<>();
+        options.put("fast", Component.text("Skips validation"));
+        options.put("safe", Component.text("Checks every entry"));
+
+        Flag<String> flag = Flags.stringFlag("mode").suggests(options);
+        assertTrue(flag.hasSuggestions());
+
+        Suggestions suggestions = suggestionsFor(flag, "");
+        assertEquals(List.of("fast", "safe"), suggestions.getList().stream().map(Suggestion::getText).toList());
+        assertNotNull(suggestions.getList().getFirst().getTooltip(), "each suggestion should carry a tooltip");
+    }
+
+    @Test
+    @DisplayName("Tooltip suggestions should reject empty or null input")
+    void testTooltipSuggestionValidation() {
+        BoolFlag flag = Flags.boolFlag("x");
+
+        assertThrows(IllegalArgumentException.class, () -> flag.suggests(Map.of()));
+        assertThrows(NullPointerException.class, () -> flag.suggests((Map<String, Component>) null));
+    }
+
+    private static Suggestions suggestionsFor(Flag<?> flag, String remaining) throws Exception {
+        SuggestionsBuilder builder = new SuggestionsBuilder(remaining, 0);
+        return flag.getSuggestionProvider().getSuggestions(null, builder).get();
+    }
+
+    private static List<String> suggestionTexts(Flag<?> flag, String remaining) throws Exception {
+        return suggestionsFor(flag, remaining).getList().stream().map(Suggestion::getText).toList();
     }
 
     @Test

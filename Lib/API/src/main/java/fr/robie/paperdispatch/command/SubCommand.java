@@ -11,6 +11,7 @@ import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
+import com.mojang.brigadier.tree.CommandNode;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 import fr.robie.paperdispatch.flag.Flag;
 import fr.robie.paperdispatch.flag.FlagContext;
@@ -27,6 +28,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -42,19 +44,29 @@ import java.util.stream.Collectors;
  * </ul>
  * Call {@link #build()} to produce the Brigadier tree.
  * <p>
- * <b>Warning — flag complexity:</b> The flag-tree builder generates a full
- * permutation of all flag orderings via recursive branching, producing
- * <b>O(n!)</b> nodes in the Brigadier tree where {@code n} is the number of
- * flags (aliases increase the constant factor). Because this happens at every
- * nesting level, and independently again for every alias of every command in
- * the tree (each alias rebuilds its own subtree), the real blow-up across a
- * deeply nested command with many aliases is closer to
- * {@code O(n! × Π aliasCounts)} summed over the whole tree. This is negligible
- * for small flag sets (n &le; 5) with few aliases, but adding a couple of
- * aliases to a command with 4-5 flags multiplies cost noticeably. Prefer few
- * flags, few aliases on flag-heavy commands, or use the generic
+ * <b>Warning — flag complexity:</b> The flag-tree builder materializes one node per
+ * <i>ordered subset</i> of the flag set, so that flags can be given in any order and any
+ * combination. That grows faster than {@code n!}. Measured node counts for a single command:
+ * <table border="1">
+ *   <caption>Brigadier nodes generated per command</caption>
+ *   <tr><th>bool flags</th><th>no positional args</th><th>2 positional args</th></tr>
+ *   <tr><td>3</td><td>16</td><td>33</td></tr>
+ *   <tr><td>4</td><td>65</td><td>131</td></tr>
+ *   <tr><td>5</td><td>326</td><td>653</td></tr>
+ *   <tr><td>6</td><td>1957</td><td>—</td></tr>
+ * </table>
+ * The subtree is attached to every executable node, aliases of nested sub-commands each build
+ * their own copy, and the whole tree is serialized into the command packet sent to <b>every
+ * client on join</b>. {@link #addFlag(Flag)} logs a warning past
+ * {@value #DEFAULT_FLAG_COUNT_WARN_THRESHOLD} flags for this reason — adjust or silence it via
+ * {@link #setFlagCountWarnThreshold(int)} once you have measured the cost.
+ * Prefer few flags, few aliases on flag-heavy commands, or a single
  * {@link fr.robie.paperdispatch.flag.Flags#argFlag(String, com.mojang.brigadier.arguments.ArgumentType)}
- * to keep the flag count low.
+ * carrying several options.
+ * <p>
+ * <b>Limitation — flags terminate the parse path:</b> flag nodes branch only into other flag
+ * nodes, never back into sub-commands. A flag must therefore come last:
+ * {@code /cmd sub --verbose} parses, {@code /cmd --verbose sub} does not.
  * <p>
  * <b>Thread-safety:</b> instances of this class are not thread-safe. All
  * mutator methods ({@link #addFlag}, {@link #addFlags}, {@link #addSubCommand},
@@ -67,12 +79,29 @@ import java.util.stream.Collectors;
  */
 public abstract class SubCommand<T extends Plugin> {
 
+    /**
+     * Default flag count above which {@link #addFlag(Flag)} warns about the size of the generated
+     * Brigadier tree. At 5 flags the subtree is already ~325 nodes per executable node.
+     *
+     * @see #setFlagCountWarnThreshold(int)
+     */
+    public static final int DEFAULT_FLAG_COUNT_WARN_THRESHOLD = 4;
+
+    /**
+     * Threshold value that suppresses the flag-tree warning entirely. Pass to
+     * {@link #setFlagCountWarnThreshold(int)} when you have measured the cost and accepted it —
+     * it reads better than an arbitrary large number.
+     */
+    public static final int FLAG_COUNT_WARN_DISABLED = Integer.MAX_VALUE;
+
+    private int flagCountWarnThreshold = DEFAULT_FLAG_COUNT_WARN_THRESHOLD;
+
     @NotNull
     protected String flagValuePrefix = "flag$";
 
     protected final T plugin;
     private final String name;
-    private final Set<String> aliases = new HashSet<>();
+    private final Set<String> aliases = new LinkedHashSet<>();
 
     private final List<SubCommand<T>> subCommands = new ArrayList<>();
     private final List<CommandRequirement<T>> requirements = new ArrayList<>();
@@ -127,11 +156,11 @@ public abstract class SubCommand<T extends Plugin> {
     }
 
     /**
-     * @return an immutable snapshot of the aliases at the time of calling
+     * @return an immutable snapshot of the aliases at the time of calling, in declaration order
      */
     @NotNull
     public Collection<String> getAliases() {
-        return Set.copyOf(this.aliases);
+        return Collections.unmodifiableSet(new LinkedHashSet<>(this.aliases));
     }
 
     /**
@@ -203,9 +232,18 @@ public abstract class SubCommand<T extends Plugin> {
     }
 
     /**
-     * Sets whether this command requires explicit confirmation before execution.
+     * Marks this command as <i>restricted</i>, wrapping its requirement predicate with
+     * {@link Commands#restricted(Predicate)}.
+     * <p>
+     * A restricted command cannot be executed from unattended contexts (such as chat
+     * click events), and the client shows the player a confirmation warning before
+     * running it. This is what vanilla uses to stop sensitive commands like {@code /op}
+     * being triggered without the player's knowledge.
+     * <p>
+     * This works whether other requirements are present: with no requirements the
+     * command stays open to everyone, but still gains the restricted behavior.
      *
-     * @param requiresConfirmation {@code true} if confirmation is required
+     * @param requiresConfirmation {@code true} to mark the command restricted
      * @return this instance for chaining
      */
     protected SubCommand<T> setRequiresConfirmation(boolean requiresConfirmation) {
@@ -224,7 +262,45 @@ public abstract class SubCommand<T extends Plugin> {
         Preconditions.checkNotNull(flag, "Flag cannot be null");
         this.checkNoCollision(flag);
         this.flags.add(flag);
+        this.warnIfFlagTreeIsLarge();
         return this;
+    }
+
+    /**
+     * Warns once the flag count crosses {@link #getFlagCountWarnThreshold()}, reporting the
+     * number of Brigadier nodes the flag subtree will occupy.
+     * <p>
+     * The generated subtree contains one node per <i>ordered subset</i> of the flag set, which
+     * grows faster than {@code n!}. Because that tree is serialized into the command packet
+     * sent to every joining client, a silent blow-up is easy to ship and hard to diagnose —
+     * so it is surfaced at startup, where it is cheap to notice.
+     */
+    private void warnIfFlagTreeIsLarge() {
+        int count = this.flags.size();
+        if (count <= this.flagCountWarnThreshold) return;
+
+        this.plugin.getLogger().warning(
+                "Command '" + this.name + "' has " + count + " flags, which expands to roughly "
+                        + orderedSubsetCount(count) + " Brigadier nodes per executable node "
+                        + "(every ordered subset of the flags is materialised, and this tree is sent to "
+                        + "every client). Consider fewer flags, or a single value flag via "
+                        + "Flags.argFlag(...) that carries several options."
+        );
+    }
+
+    /**
+     * Counts the non-empty ordered subsets of an {@code n}-element set,
+     * i.e. {@code sum(k=1..n) of nPk} — the exact node count of the generated flag subtree
+     * when every flag has a single token.
+     */
+    private static long orderedSubsetCount(int n) {
+        long total = 0;
+        long permutations = 1;
+        for (int k = 1; k <= n; k++) {
+            permutations *= (n - k + 1);
+            total += permutations;
+        }
+        return total;
     }
 
     /**
@@ -297,6 +373,7 @@ public abstract class SubCommand<T extends Plugin> {
      */
     protected void addRequiredArgument(@NotNull ArgumentBuilder<CommandSourceStack, ?> argument) {
         Preconditions.checkNotNull(argument, "Argument cannot be null");
+        this.checkNotReservedName(argument);
         argument = this.wrapBuilderType(argument);
         this.addRequiredArgument(argument, this::perform);
     }
@@ -340,6 +417,7 @@ public abstract class SubCommand<T extends Plugin> {
      */
     protected void addOptionalArgument(@NotNull ArgumentBuilder<CommandSourceStack, ?> argument) {
         Preconditions.checkNotNull(argument, "Argument cannot be null");
+        this.checkNotReservedName(argument);
         argument = this.wrapBuilderType(argument);
         this.addOptionalArgument(argument, this::perform);
     }
@@ -369,6 +447,26 @@ public abstract class SubCommand<T extends Plugin> {
         );
     }
 
+    /**
+     * Applies {@link #checkNotReservedName(String)} to a pre-built argument builder, so the
+     * guard covers the {@link ArgumentBuilder} overloads too and not only the
+     * {@code (name, type)} ones.
+     */
+    private void checkNotReservedName(@NotNull ArgumentBuilder<CommandSourceStack, ?> argument) {
+        if (argument instanceof RequiredArgumentBuilder<?, ?> required) {
+            this.checkNotReservedName(required.getName());
+        }
+    }
+
+    /**
+     * Re-creates a {@link RequiredArgumentBuilder} whose type is a plain {@link StringArgumentType}
+     * so that its type becomes a {@link FlagAwareStringType}, letting flag tokens fall through to
+     * the flag-parsing tree instead of being swallowed as string values.
+     * <p>
+     * Every piece of builder state must be carried over: children ({@code .then(...)}), redirects
+     * and forks are just as much part of the caller's intent as the command and suggestions, and
+     * dropping them silently truncates the tree the caller asked for.
+     */
     @SuppressWarnings({"unchecked", "rawtypes"})
     private ArgumentBuilder<CommandSourceStack, ?> wrapBuilderType(ArgumentBuilder<CommandSourceStack, ?> builder) {
         if (!(builder instanceof RequiredArgumentBuilder argBuilder)) return builder;
@@ -387,6 +485,14 @@ public abstract class SubCommand<T extends Plugin> {
         }
         if (argBuilder.getSuggestionsProvider() != null) {
             newBuilder.suggests(argBuilder.getSuggestionsProvider());
+        }
+
+        if (argBuilder.getRedirect() != null) {
+            newBuilder.forward(argBuilder.getRedirect(), argBuilder.getRedirectModifier(), argBuilder.isFork());
+        } else {
+            for (CommandNode<CommandSourceStack> child : (Collection<CommandNode<CommandSourceStack>>) argBuilder.getArguments()) {
+                newBuilder.then(child);
+            }
         }
         return newBuilder;
     }
@@ -530,15 +636,28 @@ public abstract class SubCommand<T extends Plugin> {
                 .toList();
     }
 
+    /**
+     * Builds one literal node and everything beneath it.
+     *
+     * <p><b>Ordering is load-bearing.</b> {@link ArgumentBuilder#then} calls {@code build()} on
+     * the child immediately and stores an immutable snapshot, so anything attached to a builder
+     * after it has been {@code then()}'d onto a parent is silently discarded. Flag branches are
+     * therefore attached to every argument-level builder before any chaining happens, and both
+     * argument chains are assembled tail-first so each node's children are complete before it
+     * becomes someone else's child. Reordering either loop drops nodes with no error.
+     *
+     * @param literal                  the literal token for this node (name or an alias)
+     * @param includeSubCommandAliases whether to also build alias nodes for nested sub-commands
+     */
     private LiteralCommandNode<CommandSourceStack> buildCommandNode(String literal, boolean includeSubCommandAliases) {
         LiteralArgumentBuilder<CommandSourceStack> builder = Commands.literal(literal);
 
-        if (!this.requirements.isEmpty()) {
-            if (this.requiresConfirmation) {
-                builder.requires(Commands.restricted(source -> this.requirements.stream().allMatch(req -> req.isMet(this.plugin, source))));
-            } else {
-                builder.requires(source -> this.requirements.stream().allMatch(req -> req.isMet(this.plugin, source)));
-            }
+        if (!this.requirements.isEmpty() || this.requiresConfirmation) {
+            Predicate<CommandSourceStack> predicate = this.requirements.isEmpty()
+                    ? source -> true
+                    : source -> this.requirements.stream().allMatch(req -> req.isMet(this.plugin, source));
+
+            builder.requires(this.requiresConfirmation ? Commands.restricted(predicate) : predicate);
         }
 
         for (SubCommand<T> sub : this.subCommands) {
@@ -554,14 +673,8 @@ public abstract class SubCommand<T extends Plugin> {
             return builder.build();
         }
 
-        // Attach flag branches to every argument-level builder BEFORE any of them are
-        // chained together via `.then()`. Brigadier's ArgumentBuilder#then(child) snapshots
-        // the child immediately into an immutable CommandNode, so flags (or further children)
-        // added to a builder *after* it has already been `.then()`'d onto something else would
-        // silently be lost.
         this.attachFlagNodes();
 
-        // Build the optional-argument chain tail-first, so each optional argument is sequential.
         ArgumentBuilder<CommandSourceStack, ?> optionalChain = null;
         if (!this.optionalArguments.isEmpty()) {
             for (int i = this.optionalArguments.size() - 1; i >= 0; i--) {
@@ -574,9 +687,6 @@ public abstract class SubCommand<T extends Plugin> {
         }
 
         if (this.requiredArguments.isEmpty()) {
-            // No required arguments: the base literal itself is executable and flag-capable
-            // (e.g. `/cmd --flag`), with optional arguments - each already flag-capable in
-            // their own right - branching directly off it.
             builder.executes(ctx -> this.executeWithFlags(this::perform, ctx));
             this.attachFlagNodesToBuilder(builder);
             if (optionalChain != null) {
@@ -585,9 +695,6 @@ public abstract class SubCommand<T extends Plugin> {
             return builder.build();
         }
 
-        // Build the required-argument chain tail-first, so each node's own children (its flag
-        // branches and, at the very tail, the optional arguments) are fully attached before that
-        // node itself gets snapshot as a child of the previous node in the chain.
         ArgumentBuilder<CommandSourceStack, ?> tail = null;
         for (int i = this.requiredArguments.size() - 1; i >= 0; i--) {
             ArgumentBuilder<CommandSourceStack, ?> current = this.requiredArguments.get(i);
@@ -637,6 +744,20 @@ public abstract class SubCommand<T extends Plugin> {
         }
     }
 
+    /**
+     * Builds the node for a single flag token, branching into every not-yet-used flag so flags
+     * can be given in any order.
+     *
+     * <p><b>For value flags, {@code attachRemainingFlags} must run before
+     * {@code literal.then(valueArg)}.</b> {@link ArgumentBuilder#then} snapshots its child
+     * immediately, so attaching the follow-on flags afterwards drops them silently and no flag
+     * could ever follow a value flag — {@code --count 5 --verbose} would stop parsing.
+     *
+     * @param token     the literal token for this flag ({@code --name} or {@code -n})
+     * @param flag      the flag this node represents
+     * @param remaining the flags still available to branch into
+     * @param executor  the executor to run when this path is matched
+     */
     @SuppressWarnings({"unchecked", "rawtypes"})
     private ArgumentBuilder<CommandSourceStack, ?> buildFlagNode(
             @NotNull String token,
@@ -660,10 +781,6 @@ public abstract class SubCommand<T extends Plugin> {
             valueArg.suggests(flag.getSuggestionProvider());
         }
 
-        // IMPORTANT: ArgumentBuilder#then() calls build() immediately and stores an
-        // immutable snapshot of the child. So valueArg's own children MUST be attached
-        // before it is handed to literal.then(valueArg) below - otherwise they'd silently
-        // be dropped and no flag could ever follow a value flag (e.g. "--count 5 --verbose").
         this.attachRemainingFlags(valueArg, remaining, executor);
         literal.then(valueArg);
 
@@ -707,6 +824,16 @@ public abstract class SubCommand<T extends Plugin> {
             ArgumentExecutor<T> executor
     ) {}
 
+    /**
+     * String argument type that refuses to consume flag tokens, so they fall through to the
+     * flag branches instead of being swallowed as a value.
+     *
+     * <p><b>Note:</b> {@code flags} is the command's <i>live</i> flag list, not a copy — that is
+     * deliberate, so flags registered after an argument (as {@code ExempleSubCommand} does) still
+     * take effect. The consequence is that this record's {@code equals}/{@code hashCode} vary
+     * over the command's construction, so do not use it as a map key or rely on
+     * {@link com.mojang.brigadier.tree.ArgumentCommandNode} equality across that window.
+     */
     private record FlagAwareStringType(ArgumentType<String> delegate,
                                        List<Flag<?>> flags) implements CustomArgumentType.Converted<String, String> {
 
@@ -746,12 +873,58 @@ public abstract class SubCommand<T extends Plugin> {
 
     /**
      * Sets the prefix used internally for flag-value argument names.
+     * <p>
+     * Must be set before any argument is added: the reserved-name check runs at
+     * {@code addRequiredArgument}/{@code addOptionalArgument} time against the prefix current
+     * at that moment, so changing it afterwards could retroactively invalidate a name that
+     * already passed.
      *
      * @param flagValuePrefix the new prefix (must not be null)
+     * @throws IllegalStateException if arguments have already been added
      */
     protected void setFlagValuePrefix(@NotNull String flagValuePrefix) {
         Preconditions.checkNotNull(flagValuePrefix, "flagValuePrefix cannot be null");
+        Preconditions.checkArgument(!flagValuePrefix.isEmpty(), "flagValuePrefix cannot be empty");
+        Preconditions.checkState(
+                this.requiredArguments.isEmpty() && this.optionalArguments.isEmpty(),
+                "setFlagValuePrefix(...) must be called before any argument is added, "
+                        + "otherwise already-validated argument names could silently start colliding "
+                        + "with the new prefix"
+        );
         this.flagValuePrefix = flagValuePrefix;
+    }
+
+    /**
+     * Returns the flag count above which {@link #addFlag(Flag)} warns about the size of the
+     * generated Brigadier tree. Defaults to {@link #DEFAULT_FLAG_COUNT_WARN_THRESHOLD}.
+     */
+    public int getFlagCountWarnThreshold() {
+        return this.flagCountWarnThreshold;
+    }
+
+    /**
+     * Overrides the flag count above which {@link #addFlag(Flag)} warns about the size of the
+     * generated Brigadier tree.
+     *
+     * <p>Raise this — or pass {@link #FLAG_COUNT_WARN_DISABLED} — for a command whose flag cost
+     * you have measured and accepted, so the warning stops being noise you learn to ignore.
+     * Lower it if you want to be told sooner.
+     *
+     * <p><b>Call this before adding flags.</b> The check runs inside {@code addFlag}, so raising
+     * the threshold afterwards cannot un-emit a warning that already fired. Unlike
+     * {@link #setFlagValuePrefix(String)} a late call is merely ineffective rather than
+     * incorrect, so it is not rejected.
+     *
+     * @param flagCountWarnThreshold the new threshold; must not be negative
+     * @throws IllegalArgumentException if {@code flagCountWarnThreshold} is negative
+     */
+    protected void setFlagCountWarnThreshold(int flagCountWarnThreshold) {
+        Preconditions.checkArgument(
+                flagCountWarnThreshold >= 0,
+                "flagCountWarnThreshold cannot be negative (got %s); use FLAG_COUNT_WARN_DISABLED to suppress the warning",
+                flagCountWarnThreshold
+        );
+        this.flagCountWarnThreshold = flagCountWarnThreshold;
     }
 
     /**
@@ -783,6 +956,7 @@ public abstract class SubCommand<T extends Plugin> {
         protected final List<String> aliases = new ArrayList<>();
         @Nullable
         protected String flagValuePrefix;
+        protected int flagCountWarnThreshold = DEFAULT_FLAG_COUNT_WARN_THRESHOLD;
         protected final List<SubCommand<T>> subCommands = new ArrayList<>();
         protected final List<CommandRequirement<T>> requirements = new ArrayList<>();
         protected boolean requiresConfirmation;
@@ -824,6 +998,28 @@ public abstract class SubCommand<T extends Plugin> {
         @NotNull
         public SubCommandBuilder<T> flagValuePrefix(@Nullable String flagValuePrefix) {
             this.flagValuePrefix = flagValuePrefix;
+            return this;
+        }
+
+        /**
+         * Overrides the flag count above which the flag-tree size warning fires
+         * (default {@link #DEFAULT_FLAG_COUNT_WARN_THRESHOLD}). Pass
+         * {@link #FLAG_COUNT_WARN_DISABLED} to suppress it.
+         *
+         * <p>Order-independent on the builder: the threshold is applied to the command before
+         * any flag is added, whatever order you call the builder methods in.
+         *
+         * @param flagCountWarnThreshold the new threshold; must not be negative
+         * @return this builder
+         */
+        @NotNull
+        public SubCommandBuilder<T> flagCountWarnThreshold(int flagCountWarnThreshold) {
+            Preconditions.checkArgument(
+                    flagCountWarnThreshold >= 0,
+                    "flagCountWarnThreshold cannot be negative (got %s); use FLAG_COUNT_WARN_DISABLED to suppress the warning",
+                    flagCountWarnThreshold
+            );
+            this.flagCountWarnThreshold = flagCountWarnThreshold;
             return this;
         }
 
@@ -962,6 +1158,7 @@ public abstract class SubCommand<T extends Plugin> {
         public SubCommand<T> build() {
             return new BuiltSubCommand<>(
                     this.plugin, this.name, this.aliases, this.flagValuePrefix,
+                    this.flagCountWarnThreshold,
                     this.subCommands, this.requirements, this.requiresConfirmation,
                     this.flags, this.requiredArgs, this.optionalArgs, this.executor
             );
@@ -1001,6 +1198,7 @@ public abstract class SubCommand<T extends Plugin> {
 
         BuiltSubCommand(
                 T plugin, String name, List<String> aliases, @Nullable String flagValuePrefix,
+                int flagCountWarnThreshold,
                 List<SubCommand<T>> subCommands, List<CommandRequirement<T>> requirements,
                 boolean requiresConfirmation, List<Flag<?>> flags,
                 List<SubCommandBuilder.ArgumentDefinition> requiredArgs,
@@ -1013,6 +1211,7 @@ public abstract class SubCommand<T extends Plugin> {
             if (flagValuePrefix != null) {
                 this.setFlagValuePrefix(flagValuePrefix);
             }
+            this.setFlagCountWarnThreshold(flagCountWarnThreshold);
 
             initializeBuilt(this, subCommands, requirements, requiresConfirmation, flags, requiredArgs, optionalArgs);
         }

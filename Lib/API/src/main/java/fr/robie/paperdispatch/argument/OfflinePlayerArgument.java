@@ -30,10 +30,9 @@ import java.util.concurrent.CompletableFuture;
  * {@link OfflinePlayerCache#builder} + {@code build()}) for lookups and
  * suggestions to work.
  *
- * <p>If no cache is installed, {@link #convert} always throws the
- * "Unknown player" error, and {@link #listSuggestions} returns an empty
- * result — commands will still function, they simply won't complete or
- * accept any player names.
+ * <p>If no cache is installed, {@link #convert} throws a distinct "no offline player cache is
+ * installed" error and {@link #listSuggestions} returns an empty result — commands still
+ * function, they simply won't complete or accept any player names.
  *
  * <p><b>Usage</b>
  * <pre>{@code
@@ -50,14 +49,25 @@ import java.util.concurrent.CompletableFuture;
  * @see OfflinePlayerCache
  */
 public final class OfflinePlayerArgument implements CustomArgumentType.Converted<UUID, String> {
-    private final DynamicCommandExceptionType ERROR_UNKNOWN_PLAYER;
+
+    /**
+     * Raised when no {@link OfflinePlayerCache} is installed, so no name could ever resolve.
+     * Shared: it carries no per-instance state.
+     */
+    private static final DynamicCommandExceptionType ERROR_NO_CACHE =
+            new DynamicCommandExceptionType(name -> MessageComponentSerializer.message().serialize(
+                    Component.text("Cannot look up '" + name + "': no offline player cache is installed.")
+                            .color(NamedTextColor.DARK_RED)));
+
+    private final DynamicCommandExceptionType errorUnknownPlayer;
 
     /**
      * Creates an argument with the default error message
      * {@code "Unknown player: <name>"}.
      */
     public OfflinePlayerArgument() {
-        this.ERROR_UNKNOWN_PLAYER = new DynamicCommandExceptionType(name -> MessageComponentSerializer.message().serialize(Component.text("Unknown player: " + name).color(NamedTextColor.DARK_RED)));
+        this.errorUnknownPlayer = new DynamicCommandExceptionType(name -> MessageComponentSerializer.message()
+                .serialize(Component.text("Unknown player: " + name).color(NamedTextColor.DARK_RED)));
     }
 
     /**
@@ -67,7 +77,7 @@ public final class OfflinePlayerArgument implements CustomArgumentType.Converted
      */
     public OfflinePlayerArgument(@NotNull DynamicCommandExceptionType errorUnknownPlayer) {
         Preconditions.checkNotNull(errorUnknownPlayer, "Error message function cannot be null");
-        this.ERROR_UNKNOWN_PLAYER = errorUnknownPlayer;
+        this.errorUnknownPlayer = errorUnknownPlayer;
     }
 
     /**
@@ -82,9 +92,13 @@ public final class OfflinePlayerArgument implements CustomArgumentType.Converted
     @Override
     public @NonNull UUID convert(@NonNull String nativeType) throws CommandSyntaxException {
         OfflinePlayerCache cache = OfflinePlayerCache.getGlobalInstance();
-        UUID playerId = cache != null ? cache.getUUID(nativeType) : null;
+        if (cache == null) {
+            throw ERROR_NO_CACHE.create(nativeType);
+        }
+
+        UUID playerId = cache.getUUID(nativeType);
         if (playerId == null) {
-            throw this.ERROR_UNKNOWN_PLAYER.create(nativeType);
+            throw this.errorUnknownPlayer.create(nativeType);
         }
         return playerId;
     }

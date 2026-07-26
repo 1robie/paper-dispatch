@@ -9,6 +9,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
+import java.util.logging.Level;
 
 /**
  * Convenience base for a top-level (root) command. Unlike {@link SubCommand},
@@ -153,6 +154,12 @@ public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
 
         @Override
         @NotNull
+        public BaseCommandBuilder<T> flagCountWarnThreshold(int flagCountWarnThreshold) {
+            return (BaseCommandBuilder<T>) super.flagCountWarnThreshold(flagCountWarnThreshold);
+        }
+
+        @Override
+        @NotNull
         public BaseCommandBuilder<T> addSubCommand(@NotNull SubCommand<T> subCommand) {
             return (BaseCommandBuilder<T>) super.addSubCommand(subCommand);
         }
@@ -216,6 +223,7 @@ public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
         public BaseCommand<T> build() {
             return new BuiltBaseCommand<>(
                     this.plugin, this.name, this.aliases, this.description, this.flagValuePrefix,
+                    this.flagCountWarnThreshold,
                     this.subCommands, this.requirements, this.requiresConfirmation,
                     this.flags, this.requiredArgs, this.optionalArgs, this.executor, this.reloadable
             );
@@ -228,7 +236,7 @@ public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
 
         BuiltBaseCommand(
                 T plugin, String name, List<String> aliases, @Nullable String description,
-                @Nullable String flagValuePrefix,
+                @Nullable String flagValuePrefix, int flagCountWarnThreshold,
                 List<SubCommand<T>> subCommands, List<CommandRequirement<T>> requirements,
                 boolean requiresConfirmation, List<Flag<?>> flags,
                 List<SubCommandBuilder.ArgumentDefinition> requiredArgs,
@@ -244,6 +252,7 @@ public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
             if (flagValuePrefix != null) {
                 this.setFlagValuePrefix(flagValuePrefix);
             }
+            this.setFlagCountWarnThreshold(flagCountWarnThreshold);
 
             this.setReloadable(reloadable);
 
@@ -256,7 +265,7 @@ public abstract class BaseCommand<T extends Plugin> extends SubCommand<T> {
             try {
                 return this.executor.execute(dispatch);
             } catch (Exception e) {
-                this.plugin.getLogger().severe("Error executing built command '" + this.getName() + "': " + e.getMessage());
+                this.plugin.getLogger().log(Level.SEVERE, "Error executing built command '" + this.getName() + "'", e);
                 return CommandResultType.FAILURE;
             }
         }

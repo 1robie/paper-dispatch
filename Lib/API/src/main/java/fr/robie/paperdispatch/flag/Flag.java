@@ -4,12 +4,17 @@ import com.google.common.base.Preconditions;
 import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
+import io.papermc.paper.command.brigadier.MessageComponentSerializer;
+import net.kyori.adventure.text.Component;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * Abstract base for a command-line flag, analogous to GNU-style {@code --option}.
@@ -186,6 +191,45 @@ public abstract class Flag<T> {
                     builder.suggest(value);
                 }
             }
+            return builder.buildFuture();
+        };
+        return this;
+    }
+
+    /**
+     * Suggests a fixed list of values, each with a hover tooltip — the same treatment vanilla
+     * gives entity selectors and registry keys.
+     *
+     * <pre>{@code
+     * Flags.stringFlag("mode").suggests(new LinkedHashMap<>() {{
+     *     put("fast", Component.text("Skips validation"));
+     *     put("safe", Component.text("Checks every entry"));
+     * }});
+     * }</pre>
+     *
+     * <p>Suggestions are emitted in the map's iteration order, so pass a {@link LinkedHashMap}
+     * if that order matters to you. Values are filtered by the text typed so far.
+     *
+     * @param valuesWithTooltips value to tooltip mappings
+     * @return this instance for chaining
+     */
+    @NotNull
+    public Flag<T> suggests(@NotNull Map<String, Component> valuesWithTooltips) {
+        Preconditions.checkNotNull(valuesWithTooltips, "Suggestion map cannot be null");
+        Preconditions.checkArgument(!valuesWithTooltips.isEmpty(), "At least one suggestion value is required");
+        valuesWithTooltips.forEach((value, tooltip) -> {
+            Preconditions.checkNotNull(value, "Suggestion value cannot be null");
+            Preconditions.checkNotNull(tooltip, "Suggestion tooltip cannot be null");
+        });
+
+        Map<String, Component> copy = new LinkedHashMap<>(valuesWithTooltips);
+        this.suggestionProvider = (context, builder) -> {
+            String remaining = builder.getRemaining().toLowerCase(Locale.ROOT);
+            copy.forEach((value, tooltip) -> {
+                if (remaining.isEmpty() || value.toLowerCase(Locale.ROOT).startsWith(remaining)) {
+                    builder.suggest(value, MessageComponentSerializer.message().serialize(tooltip));
+                }
+            });
             return builder.buildFuture();
         };
         return this;

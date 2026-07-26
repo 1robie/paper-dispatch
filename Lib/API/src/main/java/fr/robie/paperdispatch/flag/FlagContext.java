@@ -2,6 +2,7 @@ package fr.robie.paperdispatch.flag;
 
 import com.google.common.base.Preconditions;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 
@@ -12,8 +13,12 @@ import java.util.*;
  * presence checks ({@link #hasFlag}), and the full set of explicitly-provided
  * flags ({@link #getPresentFlags}). A shared empty instance is available via
  * {@link #empty()}.
+ * <p>
+ * Instances are immutable: both constructors defensively copy their inputs and every
+ * collection getter returns an unmodifiable view. The class is {@code final} so that
+ * contract cannot be broken by a subclass.
  */
-public class FlagContext {
+public final class FlagContext {
 
     private static final FlagContext EMPTY = new FlagContext();
 
@@ -69,41 +74,47 @@ public class FlagContext {
     /**
      * Gets the value of a flag, throwing if it was not provided and has no default.
      *
+     * <p>Presence is decided by whether the flag has a mapping at all, not by whether
+     * its value is non-null — {@link Flag#defaultTo(Object)} explicitly accepts
+     * {@code null}, so a flag mapped to a null default counts as present here and via
+     * {@link #getOptionalValue(String, Class)} alike.
+     *
      * @param name the flag name
      * @param type the expected value type
-     * @return the flag value
+     * @return the flag value, or {@code null} if the flag is mapped to a null default
      * @throws NoSuchElementException if the flag was neither present nor has a default
      */
-    @NotNull
+    @Nullable
     public <T> T getValue(@NotNull String name, @NotNull Class<T> type) {
         Preconditions.checkNotNull(name, "Flag name cannot be null");
         Preconditions.checkNotNull(type, "Value type cannot be null");
-        Object value = this.values.get(name);
-        if (value == null) {
+        if (!this.values.containsKey(name)) {
             throw new NoSuchElementException("Flag '" + name + "' is not present");
         }
-        return type.cast(value);
+        return type.cast(this.values.get(name));
     }
 
     /**
      * Gets the value of a flag, returning {@code fallback} if it was not provided
      * and has no default.
      *
+     * <p>As with {@link #getValue(String, Class)}, a flag explicitly mapped to a null
+     * default counts as present and yields {@code null} rather than {@code fallback}.
+     *
      * @param name     the flag name
      * @param type     the expected value type
      * @param fallback the value to return if the flag is absent
      * @return the flag value or {@code fallback}
      */
-    @NotNull
+    @Nullable
     public <T> T getValue(@NotNull String name, @NotNull Class<T> type, @NotNull T fallback) {
         Preconditions.checkNotNull(name, "Flag name cannot be null");
         Preconditions.checkNotNull(type, "Value type cannot be null");
         Preconditions.checkNotNull(fallback, "Fallback value cannot be null");
-        Object value = this.values.get(name);
-        if (value == null) {
+        if (!this.values.containsKey(name)) {
             return fallback;
         }
-        return type.cast(value);
+        return type.cast(this.values.get(name));
     }
 
     /**
