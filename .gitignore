@@ -113,8 +113,9 @@ buildNumber.properties
 run/
 /AGENTS.md
 
-# Local-only design rationale (see DESIGN-NOTES.md)
+# Local-only rationale, stripped out of the source and config to keep them readable
 /DESIGN-NOTES.md
+/CI-NOTES.md
 .classpath
 .factorypath
 .project

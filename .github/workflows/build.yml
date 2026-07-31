@@ -6,45 +6,213 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   build:
-    name: Build
+    name: Build (JDK ${{ vars.JAVA_VERSION || '25' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     env:
+      JAVA_VERSION: ${{ vars.JAVA_VERSION || '25' }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Collect commit metadata
+        id: meta
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -n "$PR_TITLE" ]; then
+            SUBJECT="$PR_TITLE"
+          else
+            SUBJECT=$(git log -1 --pretty=%s)
+          fi
+
+          SUBJECT=$(printf '%s' "$SUBJECT" | tr '\r\n' '  ')
+
+          {
+            echo "subject=$SUBJECT"
+            echo "author=$(git log -1 --pretty=%an | tr -d '\r\n')"
+            echo "sha_short=$(git rev-parse --short HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ -n "$PR_NUMBER" ]; then
+            PR_URL="${{ github.server_url }}/${{ github.repository }}/pull/$PR_NUMBER"
+            echo "pr_suffix= · [#$PR_NUMBER]($PR_URL)" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr_suffix=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build commit changelog
+        id: changelog
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          BUDGET: ${{ vars.DISCORD_CHANGELOG_BUDGET || 1500 }}
+          FALLBACK_COUNT: 10
+        run: |
+          set -uo pipefail
+          ZERO=0000000000000000000000000000000000000000
+
+          RANGE=""
+          if [ -n "${PR_BASE:-}" ] && git cat-file -e "${PR_BASE}^{commit}" 2>/dev/null; then
+            RANGE="${PR_BASE}..HEAD"
+          elif [ -n "${PUSH_BEFORE:-}" ] && [ "$PUSH_BEFORE" != "$ZERO" ] \
+               && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+            RANGE="${PUSH_BEFORE}..HEAD"
+          else
+            RANGE="-${FALLBACK_COUNT}"
+            echo "No usable commit range; falling back to the last ${FALLBACK_COUNT} commits."
+          fi
+
+          TOTAL=$(git log $RANGE --no-merges --format='%h' | wc -l | tr -d '[:space:]')
+          LINES=""
+          USED=0
+          while IFS=$'\t' read -r SHA SUBJECT; do
+            [ -n "$SHA" ] || continue
+            SUBJECT=${SUBJECT//\`/\'}
+            LINE="+ ${SHA}: ${SUBJECT}"
+            if [ $(( ${#LINES} + ${#LINE} + 40 )) -gt "$BUDGET" ]; then
+              break
+            fi
+            LINES="${LINES}${LINE}"$'\n'
+            USED=$((USED + 1))
+          done < <(git log $RANGE --no-merges --format='%h%x09%s')
+
+          OMITTED=$((TOTAL - USED))
+          if [ "$OMITTED" -gt 0 ]; then
+            LINES="${LINES}+ ... and ${OMITTED} more commit(s)"$'\n'
+          fi
+
+          if [ "$TOTAL" -eq 0 ]; then
+            BLOCK="-# No commits in range."
+          else
+            BLOCK=$'```diff\n'"${LINES}"$'```'
+          fi
+
+          echo "count=$TOTAL" >> "$GITHUB_OUTPUT"
+          echo "shown=$USED" >> "$GITHUB_OUTPUT"
+          DELIM="CHANGELOG_$(openssl rand -hex 8)"
+          {
+            echo "block<<${DELIM}"
+            printf '%s\n' "$BLOCK"
+            echo "${DELIM}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Changelog: ${USED}/${TOTAL} commits, $(printf '%s' "$BLOCK" | wc -c) chars (budget ${BUDGET})."
+
+      - name: Notify build started
+        id: notify-start
+        continue-on-error: true
+        uses: ./.github/actions/discord-notify
+        with:
+          webhook: ${{ env.DISCORD_WEBHOOK_URL }}
+          template: .github/discord/start.json
+          values: |
+            {
+              "workflow":   ${{ toJSON(github.workflow) }},
+              "ref":        ${{ toJSON(github.ref_name) }},
+              "repo":       ${{ toJSON(github.repository) }},
+              "sha":        ${{ toJSON(steps.meta.outputs.sha_short) }},
+              "actor":      ${{ toJSON(github.actor) }},
+              "avatar":     "https://avatars.githubusercontent.com/u/${{ github.actor_id }}?size=64",
+              "event":      ${{ toJSON(github.event_name) }},
+              "attempt":    ${{ toJSON(github.run_attempt) }},
+              "java":       ${{ toJSON(env.JAVA_VERSION) }},
+              "subject":    ${{ toJSON(steps.meta.outputs.subject) }},
+              "author":     ${{ toJSON(steps.meta.outputs.author) }},
+              "pr":         ${{ toJSON(steps.meta.outputs.pr_suffix) }},
+              "url":        "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "commit_url": "${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+            }
+
+      - name: Record start time
+        run: echo "BUILD_START_EPOCH=$(date -u +%s)" >> "$GITHUB_ENV"
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: "25"
+          java-version: ${{ env.JAVA_VERSION }}
           cache: "maven"
-
-      - name: Notify build started
-        if: always() && env.DISCORD_WEBHOOK_URL != ''
-        env:
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          SHA_SHORT="${GITHUB_SHA:0:7}"
-          jq -n \
-            --arg repo "${{ github.repository }}" \
-            --arg workflow "${{ github.workflow }}" \
-            --arg ref "${{ github.ref_name }}" \
-            --arg actor "${{ github.actor }}" \
-            --arg sha "$SHA_SHORT" \
-            --arg url "$RUN_URL" \
-            '{embeds:[{title:"Build started",color:15844367,fields:[{name:"Workflow",value:$workflow,inline:true},{name:"Ref",value:$ref,inline:true},{name:"Commit",value:$sha,inline:true},{name:"Actor",value:$actor,inline:true},{name:"Run",value:$url}]}]}' \
-            > payload.json
-          curl -sS -f -o /dev/null -H "Content-Type: application/json" \
-            -d @payload.json "$DISCORD_WEBHOOK_URL"
 
       - name: Build and test
         run: ./mvnw -B --no-transfer-progress verify
+
+      - name: Summarise test results
+        id: tests
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import glob, os, xml.etree.ElementTree as ET
+
+          totals = dict(tests=0, failures=0, errors=0, skipped=0)
+          for path in glob.glob("**/target/surefire-reports/TEST-*.xml", recursive=True):
+              try:
+                  root = ET.parse(path).getroot()
+              except ET.ParseError:
+                  continue
+              for key in totals:
+                  totals[key] += int(root.get(key, 0) or 0)
+
+          bad = totals["failures"] + totals["errors"]
+          if totals["tests"] == 0:
+              summary = "no tests ran"
+          elif bad:
+              summary = f"{totals['tests']} tests, {bad} failed"
+          else:
+              summary = f"{totals['tests']} tests, all passing"
+          if totals["skipped"]:
+              summary += f" ({totals['skipped']} skipped)"
+
+          print(f"summary={summary}")
+          for key, value in totals.items():
+              print(f"{key}={value}")
+          PY
+
+      - name: Compute duration
+        if: always()
+        run: |
+          ELAPSED=$(( $(date -u +%s) - ${BUILD_START_EPOCH:-$(date -u +%s)} ))
+          if [ "$ELAPSED" -ge 60 ]; then
+            echo "BUILD_DURATION=$((ELAPSED / 60))m $((ELAPSED % 60))s" >> "$GITHUB_ENV"
+          else
+            echo "BUILD_DURATION=${ELAPSED}s" >> "$GITHUB_ENV"
+          fi
+
+      - name: Write job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          TEST_SUMMARY: ${{ steps.tests.outputs.summary }}
+          SHA_SHORT: ${{ steps.meta.outputs.sha_short }}
+          SUBJECT: ${{ steps.meta.outputs.subject }}
+          COMMIT_COUNT: ${{ steps.changelog.outputs.count }}
+          COMMITS_SHOWN: ${{ steps.changelog.outputs.shown }}
+        run: |
+          {
+            echo "### Build on JDK ${JAVA_VERSION}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Result | \`${JOB_STATUS}\` |"
+            echo "| Tests | ${TEST_SUMMARY} |"
+            echo "| Commit | \`${SHA_SHORT}\` ${SUBJECT} |"
+            echo "| Commits | ${COMMITS_SHOWN}/${COMMIT_COUNT} listed |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload test reports on failure
         if: failure()
@@ -53,38 +221,34 @@ jobs:
           name: surefire-reports
           path: "**/target/surefire-reports/**"
           retention-days: 7
+          if-no-files-found: ignore
 
-      - name: Notify build success
-        if: success() && env.DISCORD_WEBHOOK_URL != ''
-        env:
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          SHA_SHORT="${GITHUB_SHA:0:7}"
-          jq -n \
-            --arg repo "${{ github.repository }}" \
-            --arg workflow "${{ github.workflow }}" \
-            --arg ref "${{ github.ref_name }}" \
-            --arg sha "$SHA_SHORT" \
-            --arg url "$RUN_URL" \
-            '{embeds:[{title:"Build passed",color:3066993,fields:[{name:"Workflow",value:$workflow,inline:true},{name:"Ref",value:$ref,inline:true},{name:"Commit",value:$sha,inline:true},{name:"Run",value:$url}]}]}' \
-            > payload.json
-          curl -sS -f -o /dev/null -H "Content-Type: application/json" \
-            -d @payload.json "$DISCORD_WEBHOOK_URL"
-
-      - name: Notify build failure
-        if: failure() && env.DISCORD_WEBHOOK_URL != ''
-        env:
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          SHA_SHORT="${GITHUB_SHA:0:7}"
-          jq -n \
-            --arg repo "${{ github.repository }}" \
-            --arg workflow "${{ github.workflow }}" \
-            --arg ref "${{ github.ref_name }}" \
-            --arg actor "${{ github.actor }}" \
-            --arg sha "$SHA_SHORT" \
-            --arg url "$RUN_URL" \
-            '{embeds:[{title:"Build failed",color:15158332,fields:[{name:"Workflow",value:$workflow,inline:true},{name:"Ref",value:$ref,inline:true},{name:"Commit",value:$sha,inline:true},{name:"Actor",value:$actor,inline:true},{name:"Run",value:$url}]}]}' \
-            > payload.json
-          curl -sS -f -o /dev/null -H "Content-Type: application/json" \
-            -d @payload.json "$DISCORD_WEBHOOK_URL"
+      - name: Notify build result
+        if: always()
+        continue-on-error: true
+        uses: ./.github/actions/discord-notify
+        with:
+          webhook: ${{ env.DISCORD_WEBHOOK_URL }}
+          template: .github/discord/${{ job.status == 'success' && 'success' || 'failure' }}.json
+          message-id: ${{ steps.notify-start.outputs.message-id }}
+          values: |
+            {
+              "workflow":   ${{ toJSON(github.workflow) }},
+              "ref":        ${{ toJSON(github.ref_name) }},
+              "repo":       ${{ toJSON(github.repository) }},
+              "sha":        ${{ toJSON(steps.meta.outputs.sha_short) }},
+              "actor":      ${{ toJSON(github.actor) }},
+              "avatar":     "https://avatars.githubusercontent.com/u/${{ github.actor_id }}?size=64",
+              "event":      ${{ toJSON(github.event_name) }},
+              "attempt":    ${{ toJSON(github.run_attempt) }},
+              "java":       ${{ toJSON(env.JAVA_VERSION) }},
+              "subject":    ${{ toJSON(steps.meta.outputs.subject) }},
+              "author":     ${{ toJSON(steps.meta.outputs.author) }},
+              "pr":         ${{ toJSON(steps.meta.outputs.pr_suffix) }},
+              "tests":      ${{ toJSON(steps.tests.outputs.summary) }},
+              "duration":   ${{ toJSON(env.BUILD_DURATION) }},
+              "changelog":  ${{ toJSON(steps.changelog.outputs.block) }},
+              "commits":    ${{ toJSON(steps.changelog.outputs.count) }},
+              "url":        "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "commit_url": "${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+            }

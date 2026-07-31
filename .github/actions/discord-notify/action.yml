@@ -1,0 +1,87 @@
+name: "Discord notify"
+description: "Render a Components V2 payload from a template and post or edit it via webhook."
+
+inputs:
+  webhook:
+    description: "Discord webhook URL. When empty the action does nothing and succeeds."
+    required: false
+    default: ""
+  template:
+    description: "Path to the JSON template containing {placeholder} tokens."
+    required: true
+  values:
+    description: "JSON object of placeholder name to replacement value."
+    required: true
+  message-id:
+    description: "Existing message to edit. When empty, a new message is posted."
+    required: false
+    default: ""
+
+outputs:
+  message-id:
+    description: "The id of the posted or edited message, empty if nothing was sent."
+    value: ${{ steps.send.outputs.message-id }}
+
+runs:
+  using: composite
+  steps:
+    - id: send
+      shell: bash
+      env:
+        WEBHOOK: ${{ inputs.webhook }}
+        TEMPLATE: ${{ inputs.template }}
+        VALUES: ${{ inputs.values }}
+        MESSAGE_ID: ${{ inputs.message-id }}
+      run: |
+        set -uo pipefail
+
+        if [ -z "$WEBHOOK" ]; then
+          echo "No webhook configured (expected on forked pull requests) - skipping."
+          echo "message-id=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        jq --argjson vals "$VALUES" '
+          def render($vals):
+            walk(
+              if type == "string" then
+                reduce ($vals | to_entries[]) as $e (
+                  .;
+                  split("{" + $e.key + "}") | join($e.value | tostring)
+                )
+              else . end
+            );
+          render($vals)
+        ' "$TEMPLATE" > payload.json
+
+        if ! jq -e . payload.json > /dev/null; then
+          echo "::error::Rendered payload is not valid JSON"
+          exit 1
+        fi
+
+        post_new() {
+          curl -sS -X POST "$WEBHOOK?wait=true" \
+            -H "Content-Type: application/json" \
+            --data @payload.json \
+            --max-time 30 --retry 2 --retry-connrefused
+        }
+
+        if [ -n "$MESSAGE_ID" ]; then
+          if RESPONSE=$(curl -sS -f -X PATCH "$WEBHOOK/messages/$MESSAGE_ID" \
+                -H "Content-Type: application/json" \
+                --data @payload.json \
+                --max-time 30 --retry 2 --retry-connrefused); then
+            echo "message-id=$MESSAGE_ID" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::warning::Editing message $MESSAGE_ID failed; posting a new message instead."
+          RESPONSE=$(post_new)
+        else
+          RESPONSE=$(post_new)
+        fi
+
+        NEW_ID=$(printf '%s' "$RESPONSE" | jq -r '.id // empty')
+        if [ -z "$NEW_ID" ]; then
+          echo "::warning::Discord did not return a message id. Response: $(printf '%s' "$RESPONSE" | head -c 300)"
+        fi
+        echo "message-id=$NEW_ID" >> "$GITHUB_OUTPUT"
