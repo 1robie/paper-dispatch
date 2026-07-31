@@ -296,7 +296,9 @@ If you need datapack function parsing, register those commands directly against
 
 ## ⚙️ Requirements
 
-- Java **21** (built with `--release 21`; CI also tests on 25)
+- **To build:** JDK **25**. `paper-api` is compiled for Java 25 (class file major 69) and an
+  older `javac` cannot read it.
+- **To consume:** Java **21** or newer. The published jars are built with `--release 21`.
 - PaperMC — built against `paper-api:26.1.2.build.53-stable`
 - Maven **3.6+** (a wrapper is included: `./mvnw`)
 
