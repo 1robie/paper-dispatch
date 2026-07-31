@@ -60,14 +60,14 @@ runs:
         fi
 
         post_new() {
-          curl -sS -X POST "$WEBHOOK?wait=true" \
+          curl -sS -X POST "$WEBHOOK?wait=true&with_components=true" \
             -H "Content-Type: application/json" \
             --data @payload.json \
             --max-time 30 --retry 2 --retry-connrefused
         }
 
         if [ -n "$MESSAGE_ID" ]; then
-          if RESPONSE=$(curl -sS -f -X PATCH "$WEBHOOK/messages/$MESSAGE_ID" \
+          if RESPONSE=$(curl -sS -f -X PATCH "$WEBHOOK/messages/$MESSAGE_ID?with_components=true" \
                 -H "Content-Type: application/json" \
                 --data @payload.json \
                 --max-time 30 --retry 2 --retry-connrefused); then
@@ -81,7 +81,10 @@ runs:
         fi
 
         NEW_ID=$(printf '%s' "$RESPONSE" | jq -r '.id // empty')
-        if [ -z "$NEW_ID" ]; then
-          echo "::warning::Discord did not return a message id. Response: $(printf '%s' "$RESPONSE" | head -c 300)"
-        fi
         echo "message-id=$NEW_ID" >> "$GITHUB_OUTPUT"
+
+        if [ -z "$NEW_ID" ]; then
+          echo "::error::Discord rejected the message. Response: $(printf '%s' "$RESPONSE" | head -c 500)"
+          exit 1
+        fi
+        echo "Sent message $NEW_ID."
