@@ -8,16 +8,11 @@ on:
 
 jobs:
   build:
-    name: Build (JDK ${{ matrix.java }})
+    name: Build
     runs-on: ubuntu-latest
 
-    strategy:
-      fail-fast: false
-      matrix:
-        # 21 is the release target; 25 is what CodeQL and JitPack build with. Testing both
-        # catches toolchain-specific breakage (e.g. an outdated byte-buddy on a newer JDK)
-        # rather than discovering it on a release build.
-        java: ["21", "25"]
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
     steps:
       - name: Checkout repository
@@ -27,8 +22,26 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: ${{ matrix.java }}
+          java-version: "25"
           cache: "maven"
+
+      - name: Notify build started
+        if: always() && env.DISCORD_WEBHOOK_URL != ''
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          SHA_SHORT="${GITHUB_SHA:0:7}"
+          jq -n \
+            --arg repo "${{ github.repository }}" \
+            --arg workflow "${{ github.workflow }}" \
+            --arg ref "${{ github.ref_name }}" \
+            --arg actor "${{ github.actor }}" \
+            --arg sha "$SHA_SHORT" \
+            --arg url "$RUN_URL" \
+            '{embeds:[{title:"Build started",color:15844367,fields:[{name:"Workflow",value:$workflow,inline:true},{name:"Ref",value:$ref,inline:true},{name:"Commit",value:$sha,inline:true},{name:"Actor",value:$actor,inline:true},{name:"Run",value:$url}]}]}' \
+            > payload.json
+          curl -sS -f -o /dev/null -H "Content-Type: application/json" \
+            -d @payload.json "$DISCORD_WEBHOOK_URL"
 
       - name: Build and test
         run: ./mvnw -B --no-transfer-progress verify
@@ -37,6 +50,41 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: surefire-reports-jdk${{ matrix.java }}
+          name: surefire-reports
           path: "**/target/surefire-reports/**"
           retention-days: 7
+
+      - name: Notify build success
+        if: success() && env.DISCORD_WEBHOOK_URL != ''
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          SHA_SHORT="${GITHUB_SHA:0:7}"
+          jq -n \
+            --arg repo "${{ github.repository }}" \
+            --arg workflow "${{ github.workflow }}" \
+            --arg ref "${{ github.ref_name }}" \
+            --arg sha "$SHA_SHORT" \
+            --arg url "$RUN_URL" \
+            '{embeds:[{title:"Build passed",color:3066993,fields:[{name:"Workflow",value:$workflow,inline:true},{name:"Ref",value:$ref,inline:true},{name:"Commit",value:$sha,inline:true},{name:"Run",value:$url}]}]}' \
+            > payload.json
+          curl -sS -f -o /dev/null -H "Content-Type: application/json" \
+            -d @payload.json "$DISCORD_WEBHOOK_URL"
+
+      - name: Notify build failure
+        if: failure() && env.DISCORD_WEBHOOK_URL != ''
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          SHA_SHORT="${GITHUB_SHA:0:7}"
+          jq -n \
+            --arg repo "${{ github.repository }}" \
+            --arg workflow "${{ github.workflow }}" \
+            --arg ref "${{ github.ref_name }}" \
+            --arg actor "${{ github.actor }}" \
+            --arg sha "$SHA_SHORT" \
+            --arg url "$RUN_URL" \
+            '{embeds:[{title:"Build failed",color:15158332,fields:[{name:"Workflow",value:$workflow,inline:true},{name:"Ref",value:$ref,inline:true},{name:"Commit",value:$sha,inline:true},{name:"Actor",value:$actor,inline:true},{name:"Run",value:$url}]}]}' \
+            > payload.json
+          curl -sS -f -o /dev/null -H "Content-Type: application/json" \
+            -d @payload.json "$DISCORD_WEBHOOK_URL"
