@@ -121,6 +121,8 @@ jobs:
         with:
           webhook: ${{ env.DISCORD_WEBHOOK_URL }}
           template: .github/discord/start.json
+          username: ${{ vars.DISCORD_USERNAME }}
+          avatar-url: ${{ vars.DISCORD_AVATAR_URL }}
           values: |
             {
               "workflow":   ${{ toJSON(github.workflow) }},
@@ -230,6 +232,8 @@ jobs:
         with:
           webhook: ${{ env.DISCORD_WEBHOOK_URL }}
           template: .github/discord/${{ job.status == 'success' && 'success' || 'failure' }}.json
+          username: ${{ vars.DISCORD_USERNAME }}
+          avatar-url: ${{ vars.DISCORD_AVATAR_URL }}
           message-id: ${{ steps.notify-start.outputs.message-id }}
           values: |
             {

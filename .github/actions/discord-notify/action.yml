@@ -16,6 +16,19 @@ inputs:
     description: "Existing message to edit. When empty, a new message is posted."
     required: false
     default: ""
+  username:
+    description: >-
+      Display name to post under, overriding the webhook's configured name. Applied only when
+      creating a message: Discord does not accept username on an edit, so a message that is
+      later edited keeps the name it was posted with. Empty uses the webhook's own name.
+    required: false
+    default: ""
+  avatar-url:
+    description: >-
+      Avatar image URL to post with, overriding the webhook's configured avatar. Same
+      create-only restriction as `username`. Empty uses the webhook's own avatar.
+    required: false
+    default: ""
 
 outputs:
   message-id:
@@ -32,6 +45,8 @@ runs:
         TEMPLATE: ${{ inputs.template }}
         VALUES: ${{ inputs.values }}
         MESSAGE_ID: ${{ inputs.message-id }}
+        USERNAME: ${{ inputs.username }}
+        AVATAR_URL: ${{ inputs.avatar-url }}
       run: |
         set -uo pipefail
 
@@ -59,10 +74,15 @@ runs:
           exit 1
         fi
 
+        jq --arg username "$USERNAME" --arg avatar "$AVATAR_URL" '
+          . + (if $username == "" then {} else {username: $username} end)
+            + (if $avatar   == "" then {} else {avatar_url: $avatar} end)
+        ' payload.json > payload.post.json
+
         post_new() {
           curl -sS -X POST "$WEBHOOK?wait=true&with_components=true" \
             -H "Content-Type: application/json" \
-            --data @payload.json \
+            --data @payload.post.json \
             --max-time 30 --retry 2 --retry-connrefused
         }
 
