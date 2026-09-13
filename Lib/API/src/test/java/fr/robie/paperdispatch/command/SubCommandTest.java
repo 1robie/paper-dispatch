@@ -426,6 +426,97 @@ class SubCommandTest {
     }
 
     @Test
+    @DisplayName("Only the last required argument may execute")
+    void testIncompleteRequiredChainIsNotExecutable() {
+        SubCommand<Plugin> cmd = SubCommand.builder(this.plugin, "cmd")
+                .addRequiredArgument("a", StringArgumentType.word())
+                .addRequiredArgument("b", StringArgumentType.word())
+                .addRequiredArgument("c", StringArgumentType.word())
+                .build();
+
+        CommandNode<CommandSourceStack> a = cmd.build().getChild("a");
+        CommandNode<CommandSourceStack> b = a.getChild("b");
+        CommandNode<CommandSourceStack> c = b.getChild("c");
+
+        assertNull(a.getCommand(), "/cmd <a> is incomplete and must not run");
+        assertNull(b.getCommand(), "/cmd <a> <b> is incomplete and must not run");
+        assertNotNull(c.getCommand(), "the full chain must still run");
+    }
+
+    @Test
+    @DisplayName("A single required argument stays executable")
+    void testSingleRequiredArgumentStaysExecutable() {
+        SubCommand<Plugin> cmd = SubCommand.builder(this.plugin, "cmd")
+                .addRequiredArgument("only", StringArgumentType.word())
+                .build();
+
+        assertNotNull(cmd.build().getChild("only").getCommand(),
+                "one required argument is a complete chain");
+    }
+
+    @Test
+    @DisplayName("Optional arguments after a required chain stay executable")
+    void testOptionalsAfterRequiredChainStayExecutable() {
+        SubCommand<Plugin> cmd = SubCommand.builder(this.plugin, "cmd")
+                .addRequiredArgument("a", StringArgumentType.word())
+                .addRequiredArgument("b", StringArgumentType.word())
+                .addOptionalArgument("opt", StringArgumentType.word())
+                .build();
+
+        CommandNode<CommandSourceStack> a = cmd.build().getChild("a");
+        CommandNode<CommandSourceStack> b = a.getChild("b");
+
+        assertNull(a.getCommand(), "still incomplete with an optional trailing the chain");
+        assertNotNull(b.getCommand(), "the required chain is complete here");
+        assertNotNull(b.getChild("opt").getCommand(), "optional arguments remain executable");
+    }
+
+    @Test
+    @DisplayName("Sub-command aliases get the same restriction as the primary name")
+    void testAliasNodesGetTheSameRestriction() {
+        SubCommand<Plugin> child = SubCommand.builder(this.plugin, "child")
+                .alias("c")
+                .addRequiredArgument("a", StringArgumentType.word())
+                .addRequiredArgument("b", StringArgumentType.word())
+                .build();
+        BaseCommand<Plugin> parent = BaseCommand.builder(this.plugin, "parent")
+                .addSubCommand(child)
+                .executes(dispatch -> CommandResultType.SUCCESS)
+                .build();
+
+        LiteralCommandNode<CommandSourceStack> node = parent.build();
+
+        for (String label : List.of("child", "c")) {
+            CommandNode<CommandSourceStack> a = node.getChild(label).getChild("a");
+            assertNotNull(a, label + " should expose the argument chain");
+            assertNull(a.getCommand(), "/parent " + label + " <a> is incomplete and must not run");
+            assertNotNull(a.getChild("b").getCommand(), "the full chain must run via " + label);
+        }
+    }
+
+    @Test
+    @DisplayName("Flags are not offered on an incomplete required chain")
+    void testFlagsSkipIncompleteRequiredArguments() {
+        SubCommand<Plugin> cmd = new SubCommand<>(this.plugin, "cmd") {
+            {
+                this.addRequiredArgument("a", StringArgumentType.word());
+                this.addRequiredArgument("b", StringArgumentType.word());
+                this.addFlag(Flags.boolFlag("verbose"));
+            }
+
+            @Override
+            protected CommandResultType perform(CommandDispatch<Plugin> dispatch) {
+                return CommandResultType.SUCCESS;
+            }
+        };
+
+        CommandNode<CommandSourceStack> a = cmd.build().getChild("a");
+
+        assertNull(a.getChild("--verbose"), "an incomplete chain must not offer flags");
+        assertNotNull(a.getChild("b").getChild("--verbose"), "the complete chain still offers them");
+    }
+
+    @Test
     @DisplayName("A command with only optional arguments stays executable at its literal")
     void testOptionalOnlyCommandIsExecutable() {
         SubCommand<Plugin> cmd = SubCommand.builder(this.plugin, "cmd")

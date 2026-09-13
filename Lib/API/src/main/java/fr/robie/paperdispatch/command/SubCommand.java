@@ -64,6 +64,11 @@ import java.util.stream.Collectors;
  * {@link fr.robie.paperdispatch.flag.Flags#argFlag(String, com.mojang.brigadier.arguments.ArgumentType)}
  * carrying several options.
  * <p>
+ * <b>Required arguments are all-or-nothing:</b> only the last required argument is executable,
+ * so a partially typed chain falls through to Brigadier's "incomplete command" error rather than
+ * dispatching with arguments the user never supplied. Flags are likewise only offered once the
+ * required chain is complete.
+ * <p>
  * <b>Limitation — flags terminate the parse path:</b> flag nodes branch only into other flag
  * nodes, never back into sub-commands. A flag must therefore come last:
  * {@code /cmd sub --verbose} parses, {@code /cmd --verbose sub} does not.
@@ -673,6 +678,7 @@ public abstract class SubCommand<T extends Plugin> {
             return builder.build();
         }
 
+        this.restrictExecutionToCompleteArgumentChains();
         this.attachFlagNodes();
 
         ArgumentBuilder<CommandSourceStack, ?> optionalChain = null;
@@ -716,8 +722,43 @@ public abstract class SubCommand<T extends Plugin> {
         if (this.flags.isEmpty()) return;
 
         for (ExecutableNode<T> execNode : this.executableNodes) {
+            if (this.isIncompleteRequiredArgument(execNode.builder)) continue;
             this.attachFlagBranches(execNode.builder, execNode.executor);
         }
+    }
+
+    /**
+     * Makes every required argument except the last one non-executable.
+     * <p>
+     * Each required argument is given an executor as it is added, because at that point the
+     * command does not yet know which one will end up last. Left that way, Brigadier happily
+     * dispatches a prefix of the chain: {@code /cmd <a>} would run a command declaring
+     * {@code <a> <b>}, and the handler would then throw
+     * {@code No such argument 'b' exists on this command} for input the user never typed.
+     * A partially typed required chain must instead fall through to Brigadier's own
+     * "incomplete command" error.
+     * <p>
+     * Runs from {@link #buildCommandNode}, so aliases - which build their own node from the same
+     * builders - get the same treatment. Idempotent, as the tree is rebuilt on every
+     * {@code COMMANDS} lifecycle event.
+     */
+    private void restrictExecutionToCompleteArgumentChains() {
+        for (int index = 0; index < this.requiredArguments.size() - 1; index++) {
+            this.requiredArguments.get(index).executes(null);
+        }
+    }
+
+    /**
+     * @return {@code true} if {@code builder} is a required argument that cannot end a command,
+     *         i.e. any required argument other than the last
+     */
+    private boolean isIncompleteRequiredArgument(@NotNull ArgumentBuilder<CommandSourceStack, ?> builder) {
+        for (int index = 0; index < this.requiredArguments.size() - 1; index++) {
+            if (this.requiredArguments.get(index) == builder) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void attachFlagNodesToBuilder(LiteralArgumentBuilder<CommandSourceStack> builder) {

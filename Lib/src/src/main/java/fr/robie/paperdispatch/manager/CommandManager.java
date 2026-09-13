@@ -179,7 +179,7 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
     @NotNull
     public List<BaseCommand<?>> getCommands(@NotNull Plugin plugin) {
         List<BaseCommand<?>> pluginCommands = this.commands.get(plugin);
-        return pluginCommands == null ? List.of() : Collections.unmodifiableList(new ArrayList<>(pluginCommands));
+        return pluginCommands == null ? List.of() : List.copyOf(pluginCommands);
     }
 
     /**
