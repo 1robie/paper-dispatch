@@ -1,9 +1,12 @@
 package fr.robie.paperdispatch.command;
 
+import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.ParseResults;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.tree.CommandNode;
 import com.mojang.brigadier.tree.LiteralCommandNode;
+import fr.robie.paperdispatch.flag.Flag;
 import fr.robie.paperdispatch.flag.Flags;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
@@ -582,6 +585,83 @@ class SubCommandTest {
                 .addRequiredArgument("flag$count", StringArgumentType.word());
 
         assertThrows(IllegalArgumentException.class, builder::build);
+    }
+
+    @Test
+    @DisplayName("A single-character flag name is matched in the form the tree registers")
+    void testSingleCharacterFlagNameIsRecognised() {
+        // flagTokens() registers a one-letter name as "-v", so matches() must recognise "-v".
+        // Comparing against "--" + name made the flag invisible to FlagAwareStringType, and a
+        // preceding string argument then swallowed the token: "/cmd -v" parsed as text="-v".
+        Flag<Boolean> shortName = Flags.boolFlag("v");
+        assertTrue(shortName.matches("-v"), "a one-letter flag is typed as -v");
+        assertFalse(shortName.matches("--v"), "no --v node is ever registered");
+
+        Flag<Boolean> longName = Flags.boolFlag("verbose");
+        assertTrue(longName.matches("--verbose"));
+        assertFalse(longName.matches("-verbose"));
+    }
+
+    @Test
+    @DisplayName("A string argument must not swallow a single-character flag token")
+    void testStringArgumentRejectsShortFlagToken() {
+        SubCommand<Plugin> cmd = new SubCommand<>(this.plugin, "cmd") {
+            {
+                this.addRequiredArgument("text", StringArgumentType.word());
+                this.addFlag(Flags.boolFlag("v"));
+            }
+
+            @Override
+            protected CommandResultType perform(CommandDispatch<Plugin> dispatch) {
+                return CommandResultType.SUCCESS;
+            }
+        };
+
+        CommandDispatcher<CommandSourceStack> dispatcher = new CommandDispatcher<>();
+        dispatcher.getRoot().addChild(cmd.build());
+        CommandSourceStack source = Mockito.mock(CommandSourceStack.class);
+
+        ParseResults<CommandSourceStack> parsed = dispatcher.parse("cmd -v", source);
+        assertFalse(parsed.getContext().getArguments().containsKey("text"),
+                "-v is a flag token, not a value for the required argument");
+        assertEquals("-v", parsed.getReader().getRemaining(),
+                "the token should be left unconsumed so Brigadier reports the missing argument");
+    }
+
+    @Test
+    @DisplayName("Nested sub-command aliases are reachable through a parent alias")
+    void testNestedAliasesReachableThroughParentAlias() {
+        SubCommand<Plugin> grand = SubCommand.builder(this.plugin, "grand").alias("g").build();
+        SubCommand<Plugin> child = SubCommand.builder(this.plugin, "child").alias("c")
+                .addSubCommand(grand).build();
+        BaseCommand<Plugin> parent = BaseCommand.builder(this.plugin, "parent")
+                .addSubCommand(child)
+                .executes(dispatch -> CommandResultType.SUCCESS)
+                .build();
+
+        LiteralCommandNode<CommandSourceStack> node = parent.build();
+
+        // An alias should behave exactly like the primary name at every depth.
+        for (String childLabel : List.of("child", "c")) {
+            CommandNode<CommandSourceStack> childNode = node.getChild(childLabel);
+            assertNotNull(childNode, childLabel + " must exist");
+            assertNotNull(childNode.getChild("grand"), "/parent " + childLabel + " grand");
+            assertNotNull(childNode.getChild("g"), "/parent " + childLabel + " g");
+        }
+    }
+
+    @Test
+    @DisplayName("Labels that could never be typed are rejected")
+    void testUnusableLabelsRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> SubCommand.builder(this.plugin, "two words").build(),
+                "a literal containing a space can never match");
+        assertThrows(IllegalArgumentException.class,
+                () -> SubCommand.builder(this.plugin, "ok").alias("").build(),
+                "an empty alias is a dead node");
+        assertThrows(IllegalArgumentException.class,
+                () -> SubCommand.builder(this.plugin, "ok").alias("has space").build(),
+                "an alias containing a space can never match");
     }
 
     @Test

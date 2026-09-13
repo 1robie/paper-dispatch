@@ -125,9 +125,32 @@ public abstract class SubCommand<T extends Plugin> {
     protected SubCommand(@NotNull T plugin, @NotNull String name) {
         Preconditions.checkNotNull(plugin, "Plugin cannot be null");
         Preconditions.checkNotNull(name, "Command name cannot be null");
-        Preconditions.checkArgument(!name.isEmpty(), "Command name cannot be empty");
+        checkUsableLabel(name, "Command name");
         this.plugin = plugin;
         this.name = name;
+    }
+
+    /**
+     * Rejects a label that could never be typed.
+     * <p>
+     * Brigadier happily builds a literal node for {@code ""} or {@code "two words"}, and the
+     * command then silently does nothing: the client splits input on spaces, so no such token is
+     * ever produced. Failing at construction turns a dead command into an immediate, obvious
+     * error.
+     *
+     * @param label the literal to validate
+     * @param what  what the label is, for the error message
+     * @throws IllegalArgumentException if the label is empty or contains whitespace
+     */
+    private static void checkUsableLabel(@NotNull String label, @NotNull String what) {
+        Preconditions.checkArgument(!label.isEmpty(), "%s cannot be empty", what);
+        for (int i = 0; i < label.length(); i++) {
+            Preconditions.checkArgument(
+                    !Character.isWhitespace(label.charAt(i)),
+                    "%s '%s' cannot contain whitespace; it could never be matched as a command literal",
+                    what, label
+            );
+        }
     }
 
     /**
@@ -140,6 +163,7 @@ public abstract class SubCommand<T extends Plugin> {
         Preconditions.checkNotNull(aliases, "Aliases cannot be null");
         for (String alias : aliases) {
             Preconditions.checkNotNull(alias, "Alias entry cannot be null");
+            checkUsableLabel(alias, "Alias");
         }
         this.aliases.addAll(Arrays.asList(aliases));
     }
@@ -635,9 +659,18 @@ public abstract class SubCommand<T extends Plugin> {
         return this.buildCommandNode(this.name, true);
     }
 
+    /**
+     * Builds one node per alias of this command.
+     * <p>
+     * Nested sub-command aliases are included, so an alias behaves exactly like the primary
+     * name. Omitting them made {@code /parent child grandchild-alias} work while
+     * {@code /parent parent-alias grandchild-alias} did not - an asymmetry nothing documented
+     * and nobody would expect. The cost is that each alias duplicates the subtree, which is the
+     * same trade the primary name already makes.
+     */
     private List<LiteralCommandNode<CommandSourceStack>> buildAliases() {
         return this.aliases.stream()
-                .map(alias -> this.buildCommandNode(alias, false))
+                .map(alias -> this.buildCommandNode(alias, true))
                 .toList();
     }
 

@@ -279,14 +279,20 @@ public abstract class Flag<T> {
 
     /**
      * Checks whether the given input string matches this flag's name or any
-     * of its aliases (in {@code --name} or {@code -x} form).
+     * of its aliases, in the same {@code --name} / {@code -x} form the command tree
+     * registers them under (see {@link #toFlagToken(String)}).
+     * <p>
+     * The name goes through {@code toFlagToken} just like the aliases do: a single-character
+     * name is registered as {@code -v}, so that is what must match. Comparing against
+     * {@code "--" + name} instead would make a one-letter flag unrecognisable, and a preceding
+     * string argument would silently swallow its token as a value.
      *
      * @param input the input to match (e.g. {@code "--verbose"})
      * @return {@code true} if this flag matches
      */
     public boolean matches(@NotNull String input) {
         Preconditions.checkNotNull(input, "Input cannot be null");
-        if (input.equals("--" + this.name)) return true;
+        if (input.equals(toFlagToken(this.name))) return true;
         for (String alias : this.aliases) {
             if (input.equals(toFlagToken(alias))) return true;
         }
