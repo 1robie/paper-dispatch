@@ -651,8 +651,63 @@ class SubCommandTest {
     }
 
     @Test
-    @DisplayName("A greedy positional argument with flags is reported")
-    void testGreedyPositionalWithFlagsWarns() {
+    @DisplayName("Flags sit before a greedy argument, so both orderings parse")
+    void testFlagsPrecedeGreedyArgument() {
+        SubCommand<Plugin> say = new SubCommand<>(this.plugin, "say") {
+            {
+                this.addFlag(Flags.boolFlag("loud"));
+                this.addRequiredArgument("msg", StringArgumentType.greedyString());
+            }
+
+            @Override
+            protected CommandResultType perform(CommandDispatch<Plugin> dispatch) {
+                return CommandResultType.SUCCESS;
+            }
+        };
+
+        CommandDispatcher<CommandSourceStack> dispatcher = new CommandDispatcher<>();
+        dispatcher.getRoot().addChild(say.build());
+        CommandSourceStack source = Mockito.mock(CommandSourceStack.class);
+
+        // A greedy string eats the rest of the line, so a flag placed after it could never be
+        // matched. Putting the flags first is the only layout where both forms work.
+        ParseResults<CommandSourceStack> flagged = dispatcher.parse("say --loud hello there", source);
+        assertEquals("hello there", flagged.getContext().getArguments().get("msg").getResult(),
+                "the greedy argument should start after the flag");
+        assertTrue(flagged.getContext().getNodes().stream()
+                        .anyMatch(n -> n.getNode().getName().equals("--loud")),
+                "the flag should be part of the parsed path");
+
+        ParseResults<CommandSourceStack> plain = dispatcher.parse("say hello there", source);
+        assertEquals("hello there", plain.getContext().getArguments().get("msg").getResult(),
+                "the command must still work with no flags at all");
+    }
+
+    @Test
+    @DisplayName("A greedy argument alone is not executable until supplied")
+    void testGreedyArgumentStillRequired() {
+        SubCommand<Plugin> say = new SubCommand<>(this.plugin, "say") {
+            {
+                this.addFlag(Flags.boolFlag("loud"));
+                this.addRequiredArgument("msg", StringArgumentType.greedyString());
+            }
+
+            @Override
+            protected CommandResultType perform(CommandDispatch<Plugin> dispatch) {
+                return CommandResultType.SUCCESS;
+            }
+        };
+
+        LiteralCommandNode<CommandSourceStack> node = say.build();
+        assertNull(node.getCommand(), "/say with no message is incomplete");
+        assertNull(node.getChild("--loud").getCommand(), "/say --loud with no message is incomplete");
+        assertNotNull(node.getChild("--loud").getChild("msg"), "the flag must continue into the argument");
+        assertNotNull(node.getChild("msg"), "the argument must also hang off the literal");
+    }
+
+    @Test
+    @DisplayName("A greedy positional with flags no longer warns, since ordering handles it")
+    void testGreedyPositionalIsNotWarnedAbout() {
         List<String> logs = this.captureLogs();
 
         new SubCommand<>(this.plugin, "say") {
@@ -667,14 +722,12 @@ class SubCommandTest {
             }
         }.build();
 
-        // greedyString() eats the rest of the line, so "/say hello --verbose" parses as
-        // msg = "hello --verbose" and the flag nodes are unreachable.
-        assertTrue(logs.stream().anyMatch(m -> m.contains("greedy string") && m.contains("msg")),
-                "expected a greedy/flag conflict warning, got: " + logs);
+        assertTrue(logs.stream().noneMatch(m -> m.contains("greedy string")),
+                "ordering resolves this case, so warning would be noise: " + logs);
     }
 
     @Test
-    @DisplayName("A greedy value flag alongside other flags is reported")
+    @DisplayName("A greedy value flag alongside other flags is still reported")
     void testGreedyValueFlagWithOtherFlagsWarns() {
         List<String> logs = this.captureLogs();
 
@@ -690,18 +743,16 @@ class SubCommandTest {
             }
         }.build();
 
+        // Reordering cannot save this one: the greedy value sits inside the flag subtree, and
+        // flags may be given in any order, so some ordering always shadows the rest.
         assertTrue(logs.stream().anyMatch(m -> m.contains("greedy string") && m.contains("--message")),
-                "expected a greedy/flag conflict warning, got: " + logs);
+                "expected a greedy value-flag warning, got: " + logs);
     }
 
     @Test
-    @DisplayName("Greedy strings without flags, and lone greedy value flags, stay quiet")
-    void testGreedyWithoutConflictIsQuiet() {
+    @DisplayName("A lone greedy value flag stays quiet")
+    void testLoneGreedyValueFlagIsQuiet() {
         List<String> logs = this.captureLogs();
-
-        SubCommand.builder(this.plugin, "say")
-                .addRequiredArgument("msg", StringArgumentType.greedyString())
-                .build().build();
 
         new SubCommand<>(this.plugin, "tell") {
             {
@@ -715,7 +766,7 @@ class SubCommandTest {
         }.build();
 
         assertTrue(logs.stream().noneMatch(m -> m.contains("greedy string")),
-                "a greedy string only conflicts when flags could be shadowed: " + logs);
+                "nothing to shadow with a single flag: " + logs);
     }
 
     @Test

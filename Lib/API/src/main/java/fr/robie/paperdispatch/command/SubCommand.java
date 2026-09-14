@@ -707,7 +707,7 @@ public abstract class SubCommand<T extends Plugin> {
             }
         }
 
-        this.warnIfGreedyArgumentBlocksFlags();
+        this.warnIfGreedyValueFlagBlocksOtherFlags();
 
         if (this.requiredArguments.isEmpty() && this.optionalArguments.isEmpty()) {
             builder.executes(ctx -> this.executeWithFlags(this::perform, ctx));
@@ -716,26 +716,86 @@ public abstract class SubCommand<T extends Plugin> {
         }
 
         this.restrictExecutionToCompleteArgumentChains();
+
+        if (this.shouldPutFlagsBeforeArguments()) {
+            // A greedy argument eats the rest of the line, so flags can only be reached before
+            // it. Every flag branch ends in the same argument chain, and the chain also hangs
+            // off the literal for the no-flags case: both "/say --loud hi there" and
+            // "/say hi there" parse.
+            ArgumentBuilder<CommandSourceStack, ?> chain = this.buildArgumentChain();
+            this.attachFlagBranches(builder, this::perform, chain);
+            builder.then(chain);
+            if (this.requiredArguments.isEmpty()) {
+                builder.executes(ctx -> this.executeWithFlags(this::perform, ctx));
+            }
+            return builder.build();
+        }
+
         this.attachFlagNodes();
 
-        ArgumentBuilder<CommandSourceStack, ?> optionalChain = null;
-        if (!this.optionalArguments.isEmpty()) {
-            for (int i = this.optionalArguments.size() - 1; i >= 0; i--) {
-                ArgumentBuilder<CommandSourceStack, ?> current = this.optionalArguments.get(i);
-                if (optionalChain != null) {
-                    current.then(optionalChain);
-                }
-                optionalChain = current;
-            }
-        }
+        ArgumentBuilder<CommandSourceStack, ?> chain = this.buildArgumentChain();
 
         if (this.requiredArguments.isEmpty()) {
             builder.executes(ctx -> this.executeWithFlags(this::perform, ctx));
             this.attachFlagNodesToBuilder(builder);
-            if (optionalChain != null) {
-                builder.then(optionalChain);
+        }
+
+        builder.then(chain);
+        return builder.build();
+    }
+
+    /**
+     * Warns when a greedy <i>value flag</i> makes the other flags unreachable.
+     * <p>
+     * A greedy positional argument is handled by ordering - see
+     * {@link #shouldPutFlagsBeforeArguments()} - but a greedy value flag sits inside the flag
+     * subtree itself, where it consumes every token that follows, including other flag tokens.
+     * {@code /say --message hi there --loud} reads {@code --loud} as part of the message and
+     * nothing can reorder that away, because flags may legitimately be given in any order.
+     * <p>
+     * A warning rather than a rejection: the command still works, it just cannot combine that
+     * flag with the others. Emitted once however many aliases follow.
+     */
+    private void warnIfGreedyValueFlagBlocksOtherFlags() {
+        if (this.flags.size() < 2 || this.greedyWarningEmitted) return;
+
+        for (Flag<?> flag : this.flags) {
+            if (isGreedyString(flag.getArgumentType())) {
+                this.greedyWarningEmitted = true;
+                this.plugin.getLogger().warning(
+                        "Command '" + this.name + "' declares the greedy string flag '"
+                                + Flag.toFlagToken(flag.getName()) + "' alongside "
+                                + (this.flags.size() - 1) + " other flag(s). A greedy string consumes "
+                                + "the rest of the input, so any flag typed after it is read as part of "
+                                + "its value. Give it a quoted string instead, or use it alone."
+                );
+                return;
             }
-            return builder.build();
+        }
+    }
+
+    /**
+     * Chains the declared arguments into a single builder: required arguments in order, with the
+     * optional ones hanging off the last of them.
+     * <p>
+     * Built tail-first, because {@link ArgumentBuilder#then} snapshots its child immediately -
+     * each node's own children must be complete before it becomes someone else's child.
+     *
+     * @return the head of the chain, or {@code null} if no arguments are declared
+     */
+    @Nullable
+    private ArgumentBuilder<CommandSourceStack, ?> buildArgumentChain() {
+        ArgumentBuilder<CommandSourceStack, ?> optionalChain = null;
+        for (int i = this.optionalArguments.size() - 1; i >= 0; i--) {
+            ArgumentBuilder<CommandSourceStack, ?> current = this.optionalArguments.get(i);
+            if (optionalChain != null) {
+                current.then(optionalChain);
+            }
+            optionalChain = current;
+        }
+
+        if (this.requiredArguments.isEmpty()) {
+            return optionalChain;
         }
 
         ArgumentBuilder<CommandSourceStack, ?> tail = null;
@@ -750,68 +810,36 @@ public abstract class SubCommand<T extends Plugin> {
             }
             tail = current;
         }
-
-        builder.then(tail);
-        return builder.build();
+        return tail;
     }
 
     /**
-     * Warns when a greedy string makes the flag subtree unreachable.
-     * <p>
-     * {@code StringArgumentType.greedyString()} consumes the entire remaining input, flag tokens
-     * included, so {@code /say hello --verbose} parses as {@code msg = "hello --verbose"} and the
-     * generated flag nodes can never be matched. {@link FlagAwareStringType} cannot rescue it
-     * either: the greedy value is one token and never equals a flag token on its own.
-     * <p>
-     * The tree is still built - Brigadier is behaving correctly and the command works, it just
-     * ignores its flags - so this is a warning rather than a rejection. Runs at build time, when
-     * the full set of arguments and flags is known, and emits once however many aliases follow.
+     * @return {@code true} when flags must be placed ahead of the arguments instead of after
+     *         them, i.e. when a greedy argument would otherwise swallow every flag token
      */
-    private void warnIfGreedyArgumentBlocksFlags() {
-        if (this.flags.isEmpty() || this.greedyWarningEmitted) return;
-
+    private boolean shouldPutFlagsBeforeArguments() {
+        if (this.flags.isEmpty()) return false;
         for (ArgumentBuilder<CommandSourceStack, ?> argument : this.requiredArguments) {
-            if (isGreedyString(argument)) {
-                this.warnGreedy("argument '" + argumentName(argument) + "'");
-                return;
-            }
+            if (isGreedyString(argument)) return true;
         }
         for (ArgumentBuilder<CommandSourceStack, ?> argument : this.optionalArguments) {
-            if (isGreedyString(argument)) {
-                this.warnGreedy("argument '" + argumentName(argument) + "'");
-                return;
-            }
+            if (isGreedyString(argument)) return true;
         }
-
-        if (this.flags.size() > 1) {
-            for (Flag<?> flag : this.flags) {
-                if (isGreedyString(flag.getArgumentType())) {
-                    this.warnGreedy("flag '" + Flag.toFlagToken(flag.getName()) + "'");
-                    return;
-                }
-            }
-        }
+        return false;
     }
 
-    private void warnGreedy(@NotNull String culprit) {
-        this.greedyWarningEmitted = true;
-        this.plugin.getLogger().warning(
-                "Command '" + this.name + "' combines a greedy string (" + culprit + ") with "
-                        + this.flags.size() + " flag(s). A greedy string consumes the rest of the input, "
-                        + "so those flags can never be matched - they will be read as part of the text. "
-                        + "Use a word or quoted string, or drop the flags."
-        );
-    }
-
-    @Nullable
-    private static String argumentName(@NotNull ArgumentBuilder<CommandSourceStack, ?> builder) {
-        return builder instanceof RequiredArgumentBuilder<?, ?> required ? required.getName() : null;
-    }
-
+    /**
+     * @return {@code true} if the builder is a greedy {@link StringArgumentType} argument, i.e.
+     *         one that consumes the entire remaining input
+     */
     private static boolean isGreedyString(@NotNull ArgumentBuilder<CommandSourceStack, ?> builder) {
         return builder instanceof RequiredArgumentBuilder<?, ?> required && isGreedyString(required.getType());
     }
 
+    /**
+     * Unwraps {@link FlagAwareStringType} before testing, since every plain string argument is
+     * wrapped in one by the time it reaches the tree.
+     */
     private static boolean isGreedyString(@Nullable ArgumentType<?> type) {
         ArgumentType<?> resolved = type instanceof FlagAwareStringType flagAware ? flagAware.delegate() : type;
         return resolved instanceof StringArgumentType string
@@ -874,13 +902,25 @@ public abstract class SubCommand<T extends Plugin> {
      * live validation, and suggestions - exactly like vanilla Minecraft commands.
      */
     private void attachFlagBranches(@NotNull ArgumentBuilder<CommandSourceStack, ?> parent, @NotNull ArgumentExecutor<T> executor) {
+        this.attachFlagBranches(parent, executor, null);
+    }
+
+    /**
+     * @param tail when non-null, the argument chain every flag node continues into, so the flags
+     *             sit ahead of the arguments instead of after them. A flag node carrying a tail
+     *             is not executable on its own unless the arguments are all optional - the
+     *             arguments still have to be supplied.
+     */
+    private void attachFlagBranches(@NotNull ArgumentBuilder<CommandSourceStack, ?> parent,
+                                    @NotNull ArgumentExecutor<T> executor,
+                                    @Nullable ArgumentBuilder<CommandSourceStack, ?> tail) {
         if (this.flags.isEmpty()) return;
 
         for (Flag<?> flag : this.flags) {
             List<Flag<?>> remaining = new ArrayList<>(this.flags);
             remaining.remove(flag);
             for (String token : this.flagTokens(flag)) {
-                parent.then(this.buildFlagNode(token, flag, remaining, executor));
+                parent.then(this.buildFlagNode(token, flag, remaining, executor, tail));
             }
         }
     }
@@ -904,40 +944,53 @@ public abstract class SubCommand<T extends Plugin> {
             @NotNull String token,
             @NotNull Flag<?> flag,
             @NotNull List<Flag<?>> remaining,
-            @NotNull ArgumentExecutor<T> executor) {
+            @NotNull ArgumentExecutor<T> executor,
+            @Nullable ArgumentBuilder<CommandSourceStack, ?> tail) {
 
         LiteralArgumentBuilder<CommandSourceStack> literal = Commands.literal(token);
+        boolean executable = tail == null || this.requiredArguments.isEmpty();
 
         if (flag.isBoolFlag()) {
-            literal.executes(ctx -> this.executeWithFlags(executor, ctx));
-            this.attachRemainingFlags(literal, remaining, executor);
+            if (executable) {
+                literal.executes(ctx -> this.executeWithFlags(executor, ctx));
+            }
+            this.attachRemainingFlags(literal, remaining, executor, tail);
+            if (tail != null) {
+                literal.then(tail);
+            }
             return literal;
         }
 
         RequiredArgumentBuilder valueArg = Commands.argument(
                 this.flagValuePrefix + flag.getName(), flag.getArgumentType()
         );
-        valueArg.executes(ctx -> this.executeWithFlags(executor, ctx));
+        if (executable) {
+            valueArg.executes(ctx -> this.executeWithFlags(executor, ctx));
+        }
         if (flag.hasSuggestions()) {
             valueArg.suggests(flag.getSuggestionProvider());
         }
 
-        this.attachRemainingFlags(valueArg, remaining, executor);
+        this.attachRemainingFlags(valueArg, remaining, executor, tail);
+        if (tail != null) {
+            valueArg.then(tail);
+        }
         literal.then(valueArg);
 
         return literal;
     }
 
     private void attachRemainingFlags(
-            @NotNull ArgumentBuilder<CommandSourceStack, ?> tail,
+            @NotNull ArgumentBuilder<CommandSourceStack, ?> parent,
             @NotNull List<Flag<?>> remaining,
-            @NotNull ArgumentExecutor<T> executor) {
+            @NotNull ArgumentExecutor<T> executor,
+            @Nullable ArgumentBuilder<CommandSourceStack, ?> tail) {
 
         for (Flag<?> next : remaining) {
             List<Flag<?>> nextRemaining = new ArrayList<>(remaining);
             nextRemaining.remove(next);
             for (String nextToken : this.flagTokens(next)) {
-                tail.then(this.buildFlagNode(nextToken, next, nextRemaining, executor));
+                parent.then(this.buildFlagNode(nextToken, next, nextRemaining, executor, tail));
             }
         }
     }
