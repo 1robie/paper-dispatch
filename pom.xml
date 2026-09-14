@@ -26,7 +26,8 @@
 
         <junit.version>5.11.4</junit.version>
         <mockito.version>5.18.0</mockito.version>
-        <mockbukkit.version>4.113.1</mockbukkit.version>
+        <paper-api.version>26.2.build.123-stable</paper-api.version>
+        <mockbukkit.version>4.116.1</mockbukkit.version>
     </properties>
 
     <dependencyManagement>
@@ -35,7 +36,7 @@
             <dependency>
                 <groupId>io.papermc.paper</groupId>
                 <artifactId>paper-api</artifactId>
-                <version>26.1.2.build.53-stable</version>
+                <version>${paper-api.version}</version>
                 <scope>provided</scope>
             </dependency>
 
@@ -76,7 +77,7 @@
 
             <dependency>
                 <groupId>org.mockbukkit.mockbukkit</groupId>
-                <artifactId>mockbukkit-v26.1.2</artifactId>
+                <artifactId>mockbukkit-v26.2</artifactId>
                 <version>${mockbukkit.version}</version>
                 <scope>test</scope>
             </dependency>
