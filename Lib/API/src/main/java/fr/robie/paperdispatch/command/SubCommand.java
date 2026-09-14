@@ -101,6 +101,8 @@ public abstract class SubCommand<T extends Plugin> {
 
     private int flagCountWarnThreshold = DEFAULT_FLAG_COUNT_WARN_THRESHOLD;
 
+    private boolean greedyWarningEmitted = false;
+
     @NotNull
     protected String flagValuePrefix = "flag$";
 
@@ -705,6 +707,8 @@ public abstract class SubCommand<T extends Plugin> {
             }
         }
 
+        this.warnIfGreedyArgumentBlocksFlags();
+
         if (this.requiredArguments.isEmpty() && this.optionalArguments.isEmpty()) {
             builder.executes(ctx -> this.executeWithFlags(this::perform, ctx));
             this.attachFlagNodesToBuilder(builder);
@@ -749,6 +753,69 @@ public abstract class SubCommand<T extends Plugin> {
 
         builder.then(tail);
         return builder.build();
+    }
+
+    /**
+     * Warns when a greedy string makes the flag subtree unreachable.
+     * <p>
+     * {@code StringArgumentType.greedyString()} consumes the entire remaining input, flag tokens
+     * included, so {@code /say hello --verbose} parses as {@code msg = "hello --verbose"} and the
+     * generated flag nodes can never be matched. {@link FlagAwareStringType} cannot rescue it
+     * either: the greedy value is one token and never equals a flag token on its own.
+     * <p>
+     * The tree is still built - Brigadier is behaving correctly and the command works, it just
+     * ignores its flags - so this is a warning rather than a rejection. Runs at build time, when
+     * the full set of arguments and flags is known, and emits once however many aliases follow.
+     */
+    private void warnIfGreedyArgumentBlocksFlags() {
+        if (this.flags.isEmpty() || this.greedyWarningEmitted) return;
+
+        for (ArgumentBuilder<CommandSourceStack, ?> argument : this.requiredArguments) {
+            if (isGreedyString(argument)) {
+                this.warnGreedy("argument '" + argumentName(argument) + "'");
+                return;
+            }
+        }
+        for (ArgumentBuilder<CommandSourceStack, ?> argument : this.optionalArguments) {
+            if (isGreedyString(argument)) {
+                this.warnGreedy("argument '" + argumentName(argument) + "'");
+                return;
+            }
+        }
+
+        if (this.flags.size() > 1) {
+            for (Flag<?> flag : this.flags) {
+                if (isGreedyString(flag.getArgumentType())) {
+                    this.warnGreedy("flag '" + Flag.toFlagToken(flag.getName()) + "'");
+                    return;
+                }
+            }
+        }
+    }
+
+    private void warnGreedy(@NotNull String culprit) {
+        this.greedyWarningEmitted = true;
+        this.plugin.getLogger().warning(
+                "Command '" + this.name + "' combines a greedy string (" + culprit + ") with "
+                        + this.flags.size() + " flag(s). A greedy string consumes the rest of the input, "
+                        + "so those flags can never be matched - they will be read as part of the text. "
+                        + "Use a word or quoted string, or drop the flags."
+        );
+    }
+
+    @Nullable
+    private static String argumentName(@NotNull ArgumentBuilder<CommandSourceStack, ?> builder) {
+        return builder instanceof RequiredArgumentBuilder<?, ?> required ? required.getName() : null;
+    }
+
+    private static boolean isGreedyString(@NotNull ArgumentBuilder<CommandSourceStack, ?> builder) {
+        return builder instanceof RequiredArgumentBuilder<?, ?> required && isGreedyString(required.getType());
+    }
+
+    private static boolean isGreedyString(@Nullable ArgumentType<?> type) {
+        ArgumentType<?> resolved = type instanceof FlagAwareStringType flagAware ? flagAware.delegate() : type;
+        return resolved instanceof StringArgumentType string
+                && string.getType() == StringArgumentType.StringType.GREEDY_PHRASE;
     }
 
     private void attachFlagNodes() {

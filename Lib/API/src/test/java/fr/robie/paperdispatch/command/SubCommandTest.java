@@ -651,6 +651,74 @@ class SubCommandTest {
     }
 
     @Test
+    @DisplayName("A greedy positional argument with flags is reported")
+    void testGreedyPositionalWithFlagsWarns() {
+        List<String> logs = this.captureLogs();
+
+        new SubCommand<>(this.plugin, "say") {
+            {
+                this.addRequiredArgument("msg", StringArgumentType.greedyString());
+                this.addFlag(Flags.boolFlag("verbose"));
+            }
+
+            @Override
+            protected CommandResultType perform(CommandDispatch<Plugin> dispatch) {
+                return CommandResultType.SUCCESS;
+            }
+        }.build();
+
+        // greedyString() eats the rest of the line, so "/say hello --verbose" parses as
+        // msg = "hello --verbose" and the flag nodes are unreachable.
+        assertTrue(logs.stream().anyMatch(m -> m.contains("greedy string") && m.contains("msg")),
+                "expected a greedy/flag conflict warning, got: " + logs);
+    }
+
+    @Test
+    @DisplayName("A greedy value flag alongside other flags is reported")
+    void testGreedyValueFlagWithOtherFlagsWarns() {
+        List<String> logs = this.captureLogs();
+
+        new SubCommand<>(this.plugin, "say") {
+            {
+                this.addFlag(Flags.greedyStringFlag("message"));
+                this.addFlag(Flags.boolFlag("verbose"));
+            }
+
+            @Override
+            protected CommandResultType perform(CommandDispatch<Plugin> dispatch) {
+                return CommandResultType.SUCCESS;
+            }
+        }.build();
+
+        assertTrue(logs.stream().anyMatch(m -> m.contains("greedy string") && m.contains("--message")),
+                "expected a greedy/flag conflict warning, got: " + logs);
+    }
+
+    @Test
+    @DisplayName("Greedy strings without flags, and lone greedy value flags, stay quiet")
+    void testGreedyWithoutConflictIsQuiet() {
+        List<String> logs = this.captureLogs();
+
+        SubCommand.builder(this.plugin, "say")
+                .addRequiredArgument("msg", StringArgumentType.greedyString())
+                .build().build();
+
+        new SubCommand<>(this.plugin, "tell") {
+            {
+                this.addFlag(Flags.greedyStringFlag("message"));
+            }
+
+            @Override
+            protected CommandResultType perform(CommandDispatch<Plugin> dispatch) {
+                return CommandResultType.SUCCESS;
+            }
+        }.build();
+
+        assertTrue(logs.stream().noneMatch(m -> m.contains("greedy string")),
+                "a greedy string only conflicts when flags could be shadowed: " + logs);
+    }
+
+    @Test
     @DisplayName("Labels that could never be typed are rejected")
     void testUnusableLabelsRejected() {
         assertThrows(IllegalArgumentException.class,
