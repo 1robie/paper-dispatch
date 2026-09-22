@@ -246,7 +246,9 @@ dispatch.getOptionalFlagValue("message", String.class);       // Optional
 
 ## 👤 Offline player cache
 
-Optional UUID ↔ name cache backing `OfflinePlayerArgument`'s tab-completion.
+Optional, **bounded** name ↔ UUID resolver backing `OfflinePlayerArgument`'s parsing and
+tab-completion. It is not a player database: every entry is evictable, and it never
+contacts Mojang or any other remote service.
 
 ```java
 @Override
@@ -256,7 +258,7 @@ public void onEnable() {
 
 @Override
 public void onDisable() {
-    OfflinePlayerCache.uninstall(this);      // shuts down its HttpClient
+    OfflinePlayerCache.uninstall(this);
 }
 ```
 
@@ -264,7 +266,8 @@ Or hold your own instance — in which case **you** own its lifecycle:
 
 ```java
 OfflinePlayerCache cache = OfflinePlayerCache.builder(this)
-        .maximumSize(5000)
+        .maximumSize(5000)          // OfflinePlayer objects
+        .maximumNameEntries(5000)   // indexed names, each direction
         .maxSuggestions(50)
         .expireAfterAccess(Duration.ofMinutes(10))
         .buildAndRegister();
@@ -272,6 +275,28 @@ OfflinePlayerCache cache = OfflinePlayerCache.builder(this)
 // onDisable
 cache.close();
 ```
+
+**How a name resolves.** The local index first, then
+`Bukkit.getOfflinePlayerIfCached(String)` — the server's own user cache, which is local and
+does no I/O. If neither answers, the name does not resolve. Going further would mean a
+blocking profile lookup on the command path.
+
+The index fills from `PlayerJoinEvent` and from those user-cache hits. `prePopulate(true)`
+additionally scans `Bukkit.getOfflinePlayers()` at startup, but it is **off by default**:
+reading each result's name loads and parses that player's `.dat` file, so on an established
+server it is thousands of disk reads for data the user cache already has for anyone seen
+recently.
+
+**Renames.** A name always resolves to its most recent owner. A player who loses their name
+to someone else keeps it as a *display* name, so `getName(uuid)` returns something stale
+rather than `null`.
+
+**Bedrock.** Floodgate players are indexed like anyone else — the server adds every login to
+its user cache. Default Floodgate settings (`username-prefix: "."`, `replace-spaces: true`)
+produce names such as `.Alex_Smith`, and every character there is one Brigadier accepts
+unquoted. With `replace-spaces: false` a gamertag keeps its space, which
+`StringArgumentType.word()` cannot parse — that is a limitation of the argument type, not
+the cache.
 
 Everything degrades gracefully when no cache is installed: commands still work, they just
 won't complete player names.
@@ -299,7 +324,7 @@ If you need datapack function parsing, register those commands directly against
 - **To build:** JDK **25**. `paper-api` is compiled for Java 25 (class file major 69) and an
   older `javac` cannot read it.
 - **To consume:** Java **21** or newer. The published jars are built with `--release 21`.
-- PaperMC — built against `paper-api:26.1.2.build.53-stable`
+- PaperMC — built against `paper-api:26.2.build.123-stable`
 - Maven **3.6+** (a wrapper is included: `./mvnw`)
 
 ---

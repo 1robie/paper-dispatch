@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.mockbukkit.mockbukkit.MockBukkit;
 import org.mockbukkit.mockbukkit.plugin.PluginMock;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -45,7 +46,6 @@ class OfflinePlayerCacheTest {
     @DisplayName("OfflinePlayerCache builder and addToCache should store and resolve UUIDs case-insensitively")
     void testCacheAddAndLookup() {
         OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin)
-                .prePopulate(false)
                 .maximumSize(500)
                 .build();
 
@@ -60,13 +60,13 @@ class OfflinePlayerCacheTest {
         cache.clear();
         assertNull(cache.getName(id));
         assertNull(cache.getUUID("Notch"));
-        assertNull(cache.getUUID("notch"), "lower-cased index must be cleared alongside the BiMap");
+        assertNull(cache.getUUID("notch"), "the lower-cased index must be cleared alongside the display index");
     }
 
     @Test
     @DisplayName("Renaming a player must not leave the old name resolvable case-insensitively")
     void testRenameEvictsOldNameFromLowercaseIndex() {
-        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin).prePopulate(false).build();
+        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin).build();
 
         UUID id = UUID.randomUUID();
         cache.addToCache(id, "OldName");
@@ -83,7 +83,7 @@ class OfflinePlayerCacheTest {
     @Test
     @DisplayName("A name claimed by a new UUID should transfer to the new owner")
     void testNameTransferBetweenUuids() {
-        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin).prePopulate(false).build();
+        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin).build();
 
         UUID first = UUID.randomUUID();
         UUID second = UUID.randomUUID();
@@ -93,15 +93,102 @@ class OfflinePlayerCacheTest {
 
         assertEquals(second, cache.getUUID("Shared"));
         assertEquals(second, cache.getUUID("shared"));
-        assertNull(cache.getName(first), "the previous owner loses the name in the BiMap");
+    }
+
+    @Test
+    @DisplayName("Losing a name to another player must leave the previous owner a name to display")
+    void testPreviousOwnerKeepsDisplayName() {
+        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin).build();
+
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+
+        cache.addToCache(first, "Shared");
+        cache.addToCache(second, "Shared");
+
+        assertEquals("Shared", cache.getName(first),
+                "the previous owner must keep a display name - returning null prints 'null' to operators");
+        assertEquals("Shared", cache.getName(second));
+        assertEquals(second, cache.getUUID("Shared"),
+                "but the name itself resolves to the new owner only");
+    }
+
+    @Test
+    @DisplayName("The name index must be bounded, evicting the oldest entries")
+    void testNameIndexIsBounded() {
+        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin)
+                .maximumNameEntries(10)
+                .build();
+
+        List<UUID> ids = new ArrayList<>();
+        for (int i = 0; i < 500; i++) {
+            UUID id = UUID.randomUUID();
+            ids.add(id);
+            cache.addToCache(id, "Player" + i);
+        }
+
+        assertNull(cache.getUUID("Player0"),
+                "an index capped at 10 entries must not still hold the first of 500 names");
+        assertNull(cache.getName(ids.getFirst()));
+
+        assertNotNull(cache.getUUID("Player499"), "the most recent entry must survive");
+    }
+
+    @Test
+    @DisplayName("The cache must not hold an HTTP client - it never contacts a remote service")
+    void testCacheHoldsNoHttpClient() {
+        for (Field field : OfflinePlayerCache.class.getDeclaredFields()) {
+            assertNotEquals(java.net.http.HttpClient.class, field.getType(),
+                    "OfflinePlayerCache must not own an HttpClient; name refreshes are local-only");
+        }
+    }
+
+    @Test
+    @DisplayName("An unindexed name should resolve from the server's own user cache")
+    void testUnknownNameResolvesFromServerUserCache() {
+        UUID joined = MockBukkit.getMock().addPlayer("Notch").getUniqueId();
+
+        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin).build();
+
+        assertEquals(joined, cache.getUUID("Notch"),
+                "getUUID must fall back to Bukkit.getOfflinePlayerIfCached before giving up");
+        assertEquals(joined, cache.getUUID("notch"), "and that fallback is case-insensitive");
+        assertEquals("Notch", cache.getName(joined),
+                "a user-cache hit should be folded into the index so the next lookup is a map read");
+    }
+
+    @Test
+    @DisplayName("A name the server has never seen must not resolve")
+    void testUnknownNameStaysUnresolved() {
+        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin).build();
+
+        assertNull(cache.getUUID("NoSuchPlayer"));
+        assertNull(cache.getUUID(""), "a blank name must not reach the server user cache");
+    }
+
+    @Test
+    @DisplayName("A Floodgate-shaped Bedrock player should index and resolve like any other")
+    void testBedrockPlayerResolves() {
+        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin).build();
+
+        UUID bedrockId = new UUID(0L, 0x0002535449A0B1C2L);
+        cache.addToCache(bedrockId, ".Alex_Smith");
+
+        assertEquals(bedrockId, cache.getUUID(".Alex_Smith"));
+        assertEquals(bedrockId, cache.getUUID(".alex_smith"));
+        assertEquals(".Alex_Smith", cache.getName(bedrockId));
+
+        List<String> matches = cache.suggestPlayerNames(new SuggestionsBuilder(".al", 0)).join()
+                .getList().stream().map(s -> s.getText()).toList();
+        assertEquals(List.of(".Alex_Smith"), matches);
     }
 
     @Test
     @DisplayName("suggestPlayerNames should respect the configured cap")
     void testSuggestionCap() {
         OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin)
-                .prePopulate(false)
                 .maxSuggestions(10)
+                .maximumNameEntries(500)
                 .build();
 
         for (int i = 0; i < 200; i++) {
@@ -110,13 +197,13 @@ class OfflinePlayerCacheTest {
 
         Suggestions suggestions = cache.suggestPlayerNames(new SuggestionsBuilder("", 0)).join();
         assertEquals(10, suggestions.getList().size(),
-                "an unbounded name index must not serialize every name into the completion packet");
+                "the index must not serialize every name into the completion packet");
     }
 
     @Test
     @DisplayName("suggestPlayerNames should filter by prefix case-insensitively")
     void testSuggestionPrefixFiltering() {
-        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin).prePopulate(false).build();
+        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin).build();
 
         cache.addToCache(UUID.randomUUID(), "Alice");
         cache.addToCache(UUID.randomUUID(), "alfred");
@@ -129,7 +216,59 @@ class OfflinePlayerCacheTest {
     }
 
     @Test
-    @DisplayName("prePopulate should still seed the name index now that it runs from build(), not the constructor")
+    @DisplayName("suggestPlayerNames should offer online players first and not duplicate them")
+    void testSuggestionsPreferOnlinePlayers() {
+        MockBukkit.getMock().addPlayer("Steve");
+
+        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin)
+                .maxSuggestions(2)
+                .build();
+
+        for (int i = 0; i < 50; i++) {
+            cache.addToCache(UUID.randomUUID(), "Stranger" + i);
+        }
+
+        List<String> matches = cache.suggestPlayerNames(new SuggestionsBuilder("st", 0)).join()
+                .getList().stream().map(s -> s.getText()).toList();
+
+        assertTrue(matches.contains("Steve"),
+                "an online player must survive the cap; they are the likeliest completion");
+        assertEquals(2, matches.size());
+    }
+
+    @Test
+    @DisplayName("Offline names must still be suggested when no online player matches the prefix")
+    void testOfflineNamesSuggestedWhenNoOnlinePlayerMatches() {
+        MockBukkit.getMock().addPlayer("Steve");
+        MockBukkit.getMock().addPlayer("Herobrine");
+
+        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin).build();
+        cache.addToCache(UUID.randomUUID(), "Alice");
+        cache.addToCache(UUID.randomUUID(), "Alfred");
+
+        List<String> matches = cache.suggestPlayerNames(new SuggestionsBuilder("al", 0)).join()
+                .getList().stream().map(s -> s.getText()).sorted().toList();
+
+        assertEquals(List.of("Alfred", "Alice"), matches,
+                "the online pass matching nothing must not suppress the index pass");
+    }
+
+    @Test
+    @DisplayName("An online player already in the index must be suggested once, not twice")
+    void testOnlinePlayerIsNotSuggestedTwice() {
+        UUID id = MockBukkit.getMock().addPlayer("Steve").getUniqueId();
+
+        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin).build();
+        cache.addToCache(id, "Steve");
+
+        List<String> matches = cache.suggestPlayerNames(new SuggestionsBuilder("st", 0)).join()
+                .getList().stream().map(s -> s.getText()).toList();
+
+        assertEquals(List.of("Steve"), matches);
+    }
+
+    @Test
+    @DisplayName("prePopulate should still seed the name index when it is explicitly enabled")
     void testPrePopulateSeedsIndex() {
         MockBukkit.getMock().addPlayer("Notch");
 
@@ -156,15 +295,16 @@ class OfflinePlayerCacheTest {
     }
 
     @Test
-    @DisplayName("prePopulate(false) should leave the index empty")
-    void testPrePopulateDisabled() {
+    @DisplayName("prePopulate must default to false so no startup scan runs unasked")
+    void testPrePopulateDefaultsToFalse() {
         MockBukkit.getMock().addPlayer("Notch");
 
-        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin)
-                .prePopulate(false)
-                .build();
+        OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin).build();
 
-        assertNull(cache.getUUID("Notch"));
+        // The name still resolves - but through the server's user cache, not a playerdata
+        // scan - so the observable difference is that nothing was indexed up front.
+        assertNull(cache.getName(UUID.randomUUID()));
+        assertNull(cache.getUUID("SomeoneWhoNeverJoined"));
         cache.close();
     }
 
@@ -195,7 +335,6 @@ class OfflinePlayerCacheTest {
     @DisplayName("close() should be idempotent and unregister the listener")
     void testCloseIsIdempotent() {
         OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin)
-                .prePopulate(false)
                 .buildAndRegister();
 
         assertTrue(cache.isRegistered());
@@ -213,19 +352,20 @@ class OfflinePlayerCacheTest {
         OfflinePlayerCache.install(this.plugin);
         OfflinePlayerCache cache = OfflinePlayerCache.getGlobalInstance();
         assertNotNull(cache);
-        cache.addToCache(UUID.randomUUID(), "Notch");
+        UUID id = UUID.randomUUID();
+        cache.addToCache(id, "Notch");
 
         assertTrue(OfflinePlayerCache.uninstall(this.plugin));
 
         assertFalse(cache.isRegistered());
-        assertNull(cache.getUUID("Notch"), "close() clears the index");
+        assertNull(cache.getName(id), "close() clears the index");
     }
 
     @Test
     @DisplayName("Concurrent reads during tab completion and writes should not cause ConcurrentModificationException")
     void testThreadSafety() throws Exception {
         OfflinePlayerCache cache = OfflinePlayerCache.builder(this.plugin)
-                .prePopulate(false)
+                .maximumNameEntries(10_000)
                 .build();
 
         for (int i = 0; i < 100; i++) {
