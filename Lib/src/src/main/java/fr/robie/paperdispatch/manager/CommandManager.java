@@ -545,7 +545,7 @@ public class CommandManager<T extends Plugin> implements ICommandManager<T> {
     @NotNull
     private CommandRemoval toRemoval(@NotNull BaseCommand<?> command) {
         return new CommandRemoval(
-                command.getPlugin().getPluginMeta().namespace(),
+                command.getPlugin().getName().toLowerCase(Locale.ROOT),
                 command.getName(),
                 List.copyOf(command.getAliases())
         );
